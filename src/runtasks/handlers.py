@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import time
 from typing import Mapping, Protocol, cast
 
 from runtasks.adapters import ExternalAdapter, ExternalRequest
@@ -107,10 +108,12 @@ class FixtureHandler:
         outcome_json: str,
         request_log: Path | None,
         redactor: Redactor,
+        delay_seconds: float = 0,
     ) -> None:
         self._outcome_json = outcome_json
         self._request_log = request_log
         self._redactor = redactor
+        self._delay_seconds = delay_seconds
 
     def execute(
         self,
@@ -130,6 +133,8 @@ class FixtureHandler:
                 stream.write(
                     json.dumps(self._redactor.value(request), sort_keys=True) + "\n"
                 )
+        if self._delay_seconds:
+            time.sleep(self._delay_seconds)
         try:
             raw_outcome: object = json.loads(self._outcome_json)
         except (json.JSONDecodeError, UnicodeError) as error:
@@ -181,7 +186,19 @@ def build_handler_registry(
         return HandlerRegistry(_PRODUCTION_HANDLERS)
     raw_log_path = settings.get("RUNTASKS_FIXTURE_HANDLER_REQUEST_LOG")
     log_path = None if raw_log_path is None else Path(raw_log_path)
-    fixture_handler = FixtureHandler(fixture_outcome, log_path, redactor)
+    raw_delay = settings.get("RUNTASKS_FIXTURE_HANDLER_DELAY_SECONDS", "0")
+    try:
+        delay_seconds = float(raw_delay)
+    except ValueError as error:
+        raise HandlerError("fixture handler delay is invalid") from error
+    if not 0 <= delay_seconds <= 60:
+        raise HandlerError("fixture handler delay is invalid")
+    fixture_handler = FixtureHandler(
+        fixture_outcome,
+        log_path,
+        redactor,
+        delay_seconds,
+    )
     return HandlerRegistry(
         {name: fixture_handler for name in _PRODUCTION_HANDLERS}
     )

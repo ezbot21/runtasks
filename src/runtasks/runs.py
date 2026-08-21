@@ -80,6 +80,8 @@ class Run:
     summary: str
     details: dict[str, object]
     external_log_ref: str | None
+    scheduled_for: str | None
+    next_run_at: str | None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -87,8 +89,10 @@ class Run:
             "details": self.details,
             "external_log_ref": self.external_log_ref,
             "finished_at": self.finished_at,
+            "next_run_at": self.next_run_at,
             "id": self.id,
             "started_at": self.started_at,
+            "scheduled_for": self.scheduled_for,
             "status": self.status,
             "summary": self.summary,
             "task_id": self.task_id,
@@ -106,12 +110,52 @@ def execute_manual_run(
 ) -> Run:
     task = get_task(path, task_id)
     run_id = _create_run(path, task, trigger="manual")
+    return _execute_claimed_run(
+        path,
+        run_id,
+        task,
+        trigger="manual",
+        external_adapter=external_adapter,
+        handler_registry=handler_registry,
+        redactor=redactor,
+    )
+
+
+def execute_scheduled_run(
+    path: Path,
+    run_id: str,
+    task: Task,
+    external_adapter: ExternalAdapter,
+    handler_registry: HandlerRegistry,
+    redactor: Redactor,
+) -> Run:
+    return _execute_claimed_run(
+        path,
+        run_id,
+        task,
+        trigger="scheduled",
+        external_adapter=external_adapter,
+        handler_registry=handler_registry,
+        redactor=redactor,
+    )
+
+
+def _execute_claimed_run(
+    path: Path,
+    run_id: str,
+    task: Task,
+    *,
+    trigger: str,
+    external_adapter: ExternalAdapter,
+    handler_registry: HandlerRegistry,
+    redactor: Redactor,
+) -> Run:
     _transition_run(path, run_id, "running", started_at=_utc_now())
 
     try:
         handler = handler_registry.get(task.handler)
         outcome = handler.execute(
-            HandlerContext(run_id=run_id, task=task, trigger="manual"),
+            HandlerContext(run_id=run_id, task=task, trigger=trigger),
             external_adapter,
         )
         safe_outcome = _normalize_handler_outcome(outcome, redactor)
@@ -136,6 +180,71 @@ def execute_manual_run(
         external_log_ref=safe_outcome.external_log_ref,
     )
     return get_run(path, run_id)
+
+
+def claim_scheduled_run(
+    path: Path,
+    task: Task,
+    *,
+    claimed_at: str,
+    next_run_at: str,
+    missed_occurrences_skipped: int,
+) -> str | None:
+    run_id = f"run_{uuid.uuid4().hex[:24]}"
+    scheduling_details: dict[str, object] = {
+        "scheduling": {
+            "missed_occurrences_skipped": missed_occurrences_skipped,
+            "next_run_at": next_run_at,
+            "scheduled_for": task.next_run_at,
+        }
+    }
+    try:
+        with _run_connection(path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE tasks SET next_run_at = ?, updated_at = ?
+                WHERE id = ?
+                  AND enabled = 1
+                  AND removed_at IS NULL
+                  AND next_run_at = ?
+                  AND next_run_at <= ?
+                """,
+                (
+                    next_run_at,
+                    claimed_at,
+                    task.id,
+                    task.next_run_at,
+                    claimed_at,
+                ),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                return None
+            connection.execute(
+                """
+                INSERT INTO runs(
+                    id, task_id, task_name, trigger, status, created_at,
+                    summary, details_json, scheduled_for, next_run_at
+                ) VALUES (?, ?, ?, 'scheduled', 'claimed', ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    task.id,
+                    task.name,
+                    claimed_at,
+                    "Scheduled occurrence claimed.",
+                    _canonical_details(scheduling_details),
+                    task.next_run_at,
+                    next_run_at,
+                ),
+            )
+            connection.commit()
+    except RunError:
+        raise
+    except sqlite3.Error as error:
+        raise RunError("scheduled Run could not be claimed") from error
+    return run_id
 
 
 def get_run(path: Path, run_id: str) -> Run:
@@ -241,7 +350,7 @@ def _transition_run(
         with _run_connection(path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT status FROM runs WHERE id = ?",
+                "SELECT status, details_json FROM runs WHERE id = ?",
                 (run_id,),
             ).fetchone()
             if row is None:
@@ -268,7 +377,12 @@ def _transition_run(
                     raise RunTransitionError(
                         "terminal Run requires completion details"
                     )
-                details_json = _canonical_details(details)
+                stored_details_value = json.loads(str(row["details_json"]))
+                if not isinstance(stored_details_value, dict):
+                    raise RunTransitionError("stored Run details are invalid")
+                merged_details = dict(details)
+                merged_details.update(cast(dict[str, object], stored_details_value))
+                details_json = _canonical_details(merged_details)
                 cursor = connection.execute(
                     """
                     UPDATE runs SET
@@ -362,6 +476,12 @@ def _run_from_row(row: sqlite3.Row) -> Run:
             None
             if row["external_log_ref"] is None
             else str(row["external_log_ref"])
+        ),
+        scheduled_for=(
+            None if row["scheduled_for"] is None else str(row["scheduled_for"])
+        ),
+        next_run_at=(
+            None if row["next_run_at"] is None else str(row["next_run_at"])
         ),
     )
 

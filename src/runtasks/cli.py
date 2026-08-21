@@ -24,6 +24,13 @@ from runtasks.handlers import build_handler_registry
 from runtasks.paths import RuntimePaths
 from runtasks.redaction import DEFAULT_REDACTOR, Redactor
 from runtasks.runs import Run, RunError, execute_manual_run, list_runs, search_runs
+from runtasks.scheduler import (
+    FixedClock,
+    SchedulerValidationError,
+    SystemClock,
+    parse_scheduler_time,
+    run_due_tasks,
+)
 from runtasks.secrets import SecretConfigurationError, load_secret_settings
 from runtasks.tasks import (
     Task,
@@ -126,6 +133,15 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("task_id")
     _add_output_json_flag(run_parser)
 
+    run_due_parser = subparsers.add_parser(
+        "run-due", help="claim and run all due Tasks"
+    )
+    run_due_parser.add_argument(
+        "--now",
+        help="deterministic offset-aware RFC 3339 scheduler time",
+    )
+    _add_output_json_flag(run_due_parser)
+
     history_parser = subparsers.add_parser("history", help="list Run history")
     history_parser.add_argument("task_id", nargs="?")
     _add_output_json_flag(history_parser)
@@ -176,6 +192,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 options.as_json,
                 secret_settings,
             )
+        if options.command == "run-due":
+            return _run_due(
+                paths,
+                options.now,
+                options.as_json,
+                secret_settings,
+            )
         if options.command == "history":
             return _history(paths, options.task_id, options.as_json)
         if options.command == "search":
@@ -188,6 +211,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         SecretConfigurationError,
         ExternalAdapterError,
         RunError,
+        SchedulerValidationError,
         TaskError,
     ) as error:
         return _report_error(str(error), getattr(options, "as_json", False))
@@ -209,7 +233,7 @@ def _json_output_requested(arguments: Sequence[str]) -> bool:
     if arguments[0] == "--json":
         return True
     command = arguments[0]
-    if command in {"history", "run", "search", "status"}:
+    if command in {"history", "run", "run-due", "search", "status"}:
         return "--json" in arguments[1:]
     if command != "task" or len(arguments) < 2:
         return False
@@ -295,7 +319,10 @@ def _task_command(paths: RuntimePaths, options: argparse.Namespace) -> int:
             _safe_print("No Tasks registered.")
         else:
             for task in tasks:
-                _safe_print(f"{task.id}  {task.name}  [{task.human_availability}]")
+                _safe_print(
+                    f"{task.id}  {task.name}  [{task.human_availability}]  "
+                    f"next due {task.next_run_local}"
+                )
         return 0
 
     if options.task_command == "show":
@@ -362,7 +389,7 @@ def _show_task(task: Task, as_json: bool) -> int:
     _safe_print(f"Task {task.id}: {task.name}")
     _safe_print(f"Status: {task.human_availability}")
     _safe_print(f"Schedule: {task.schedule.human_description()} {task.timezone_name}")
-    _safe_print(f"Next due: {task.next_run_at}")
+    _safe_print(f"Next due: {task.next_run_local} ({task.next_run_at})")
     _safe_print(f"Action: {task.action_mode} via {task.handler}")
     _safe_print(f"Description: {task.description}")
     _safe_print(f"Source: {source}")
@@ -397,6 +424,42 @@ def _run_task(
     else:
         _print_run(run)
     return EXIT_EXECUTION_ERROR if run.status == "failed" else 0
+
+
+def _run_due(
+    paths: RuntimePaths,
+    now: str | None,
+    as_json: bool,
+    secret_settings: Mapping[str, str],
+) -> int:
+    clock = SystemClock() if now is None else FixedClock(parse_scheduler_time(now))
+    adapter = build_external_adapter(secret_settings, _ACTIVE_REDACTOR)
+    handler_registry = build_handler_registry(secret_settings, _ACTIVE_REDACTOR)
+    result = run_due_tasks(
+        paths.database_file,
+        clock,
+        adapter,
+        handler_registry,
+        _ACTIVE_REDACTOR,
+    )
+    if as_json:
+        _print_json(
+            {
+                "current_time": result.current_time,
+                "runs": [run.as_dict() for run in result.runs],
+                "status": result.status,
+            }
+        )
+    elif not result.runs:
+        _safe_print(f"No Tasks due at {result.current_time}.")
+    else:
+        for run in result.runs:
+            _print_run(run)
+    return (
+        EXIT_EXECUTION_ERROR
+        if any(run.status == "failed" for run in result.runs)
+        else 0
+    )
 
 
 def _history(paths: RuntimePaths, task_id: str | None, as_json: bool) -> int:

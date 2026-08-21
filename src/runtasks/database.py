@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any, Iterator
 
 
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 BUSY_TIMEOUT_MS = 5_000
 
 
@@ -98,6 +98,9 @@ def _apply_migrations(connection: sqlite3.Connection) -> bool:
         if current_version < 3:
             _create_run_history(connection)
             _record_migration(connection, 3)
+        if current_version < 4:
+            _add_scheduled_run_claims(connection)
+            _record_migration(connection, 4)
         connection.commit()
     except Exception:
         connection.rollback()
@@ -245,6 +248,18 @@ def _create_run_history(connection: sqlite3.Connection) -> None:
         CREATE TRIGGER runs_fts_delete AFTER DELETE ON runs BEGIN
             DELETE FROM run_fts WHERE run_id = old.id;
         END
+        """
+    )
+
+
+def _add_scheduled_run_claims(connection: sqlite3.Connection) -> None:
+    connection.execute("ALTER TABLE runs ADD COLUMN scheduled_for TEXT")
+    connection.execute("ALTER TABLE runs ADD COLUMN next_run_at TEXT")
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX runs_scheduled_occurrence_idx
+        ON runs(task_id, scheduled_for)
+        WHERE trigger = 'scheduled'
         """
     )
 

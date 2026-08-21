@@ -266,7 +266,7 @@ class RunTasksCliTests(unittest.TestCase):
                         "fts5": True,
                         "journal_mode": "wal",
                         "path": str(home / "var" / "data" / "runtasks.sqlite3"),
-                        "schema_version": 3,
+                        "schema_version": 4,
                     },
                     "home": str(home),
                     "initialized": True,
@@ -301,7 +301,7 @@ class RunTasksCliTests(unittest.TestCase):
 
             self.assertEqual(initialization.returncode, 0, initialization.stderr)
             self.assertEqual(status.returncode, 0, status.stderr)
-            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 3)
+            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 4)
             self.assertEqual(tasks.returncode, 0, tasks.stderr)
             self.assertEqual(json.loads(tasks.stdout)["tasks"], [])
 
@@ -336,7 +336,7 @@ class RunTasksCliTests(unittest.TestCase):
             with sqlite3.connect(database_file) as connection:
                 connection.execute("DROP TABLE runs")
                 connection.execute("DROP TABLE run_fts")
-                connection.execute("DELETE FROM schema_migrations WHERE version = 3")
+                connection.execute("DELETE FROM schema_migrations WHERE version >= 3")
 
             migrated = self.run_cli(home, "init")
             status = self.run_cli(home, "--json", "status")
@@ -344,7 +344,7 @@ class RunTasksCliTests(unittest.TestCase):
             history = self.run_cli(home, "--json", "history", task["id"])
 
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 3)
+            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 4)
             self.assertEqual(json.loads(shown.stdout)["task"], task)
             self.assertEqual(json.loads(history.stdout)["runs"], [])
 

@@ -1,6 +1,6 @@
 # RunTasks
 
-RunTasks is a portable Python application for durable, reviewed operational tasks. It provides an isolated runtime home, a versioned SQLite Task and Run registry, validated lifecycle commands, bounded named-handler execution, searchable history, and FTS5-backed search.
+RunTasks is a portable Python application for durable, reviewed operational tasks. It provides an isolated runtime home, a versioned SQLite Task and Run registry, validated lifecycle commands, a deterministic due-task scheduler, bounded named-handler execution, searchable history, and FTS5-backed search.
 
 ## Requirements
 
@@ -52,6 +52,7 @@ bin/runtasks task disable <task-id>
 bin/runtasks task enable <task-id>
 bin/runtasks task remove <task-id>
 bin/runtasks run <task-id>
+bin/runtasks run-due
 bin/runtasks history
 bin/runtasks history <task-id>
 bin/runtasks search "OAuth safety"
@@ -80,7 +81,9 @@ An add payload has this shape:
 
 Supported schedules are `daily` (`type` and `time`) and `interval-days` (`type`,
 `days`, and `time`). Times use `HH:MM`; `next_run_at` must be an offset-aware RFC
-3339 timestamp that falls at the configured local schedule time. Supported action
+3339 timestamp that falls at the configured local schedule time. Task timezones use
+IANA `zoneinfo` names and default to `Asia/Singapore` when omitted. Human and JSON
+Task output includes the next due time in the Task's configured timezone. Supported action
 modes are `check`, `notify`, and `approved-procedure`. The bounded handler registry
 currently accepts `manual_notification` for `notify` Tasks and `pi_mcp_adapter` for
 `check` or `approved-procedure` Tasks. Handler execution is added separately; Task
@@ -97,6 +100,35 @@ still resolve its Task instead of becoming orphaned. Its former identity and pol
 fingerprints are released, allowing a later fresh registration. Identity-equivalent
 and policy-equivalent adds return a nonzero,
 update-oriented duplicate outcome rather than inserting another Task.
+
+## Daily scheduler
+
+`runtasks run-due` is the single scheduler entry point. It does not depend on
+systemd: any daily wake mechanism may invoke it. The command takes one scheduler
+current time, selects enabled Tasks with `next_run_at` at or before that time, and
+claims each due occurrence in SQLite before invoking its named handler. The claim and
+Task advancement commit in the same transaction, and a unique scheduled-occurrence
+constraint prevents competing processes from claiming the same occurrence.
+
+Each Task advances by its own local-calendar interval using Python `zoneinfo`; a
+14-day Task therefore remains fortnightly behind a daily wake. After downtime, one
+catch-up Run is claimed for the oldest due occurrence and `next_run_at` advances by
+that Task's interval until it is in the future. Skipped overdue occurrences are
+recorded in the Run's `scheduling` details. Repeating `run-due` at the same current
+time produces no additional Run.
+
+For deterministic tests and controlled replay, supply an offset-aware clock:
+
+```bash
+bin/runtasks run-due --now 2026-09-01T01:00:00Z --json
+```
+
+With no due work, the command exits successfully and reports `no-due-work`. Handler
+failures are retained as failed scheduled Runs, cause exit status 1, and do not
+re-open the safely claimed interval. If the process is interrupted after claiming,
+history retains the Run as `claimed` or `running`; the Task has already advanced, so
+a later invocation cannot duplicate that occurrence. Run history exposes
+`scheduled_for` and the resulting `next_run_at` for auditing these outcomes.
 
 ## Named execution and Run history
 
@@ -117,8 +149,9 @@ The current execution modes are deliberately bounded:
 
 Handlers and external adapters exchange structured requests and outcomes. Successful,
 failed, and manual-action-due Runs retain Task identity, timestamps, a redacted summary,
-structured redacted details, and an optional redacted external log reference. Execution
-failures return exit status 1 while still recording inspectable history; validation
+structured redacted details, and an optional redacted external log reference. Run
+triggers distinguish `scheduled`, `manual`, and future `approval` execution in the same
+history. Execution failures return exit status 1 while still recording inspectable history; validation
 failures return exit status 2.
 
 Use `runtasks history` for all Runs or `runtasks history <task-id>` for one Task.

@@ -13,6 +13,7 @@ from typing import Any, Iterator, Mapping, cast
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
+from runtasks.config import DEFAULT_TIMEZONE
 from runtasks.database import LATEST_SCHEMA_VERSION, database_connection
 from runtasks.handler_contracts import HANDLER_ACTION_MODES
 
@@ -35,7 +36,7 @@ TASK_FIELDS = frozenset(
         "enabled",
     }
 )
-REQUIRED_TASK_FIELDS = TASK_FIELDS - {"enabled"}
+REQUIRED_TASK_FIELDS = TASK_FIELDS - {"enabled", "timezone"}
 MAX_POLICY_BYTES = 65_536
 MAX_POLICY_DEPTH = 8
 _IANA_TIMEZONES = frozenset(available_timezones())
@@ -196,6 +197,15 @@ class Task:
     removed_at: str | None
 
     @property
+    def next_run_local(self) -> str:
+        due_at = datetime.fromisoformat(self.next_run_at.replace("Z", "+00:00"))
+        local_due_at = due_at.astimezone(ZoneInfo(self.timezone_name))
+        return (
+            f"{local_due_at.isoformat(timespec='seconds')}"
+            f"[{self.timezone_name}]"
+        )
+
+    @property
     def human_availability(self) -> str:
         if self.removed_at is not None:
             return "removed (unavailable for scheduled execution)"
@@ -216,6 +226,7 @@ class Task:
             "id": self.id,
             "name": self.name,
             "next_run_at": self.next_run_at,
+            "next_run_local": self.next_run_local,
             "policy": self.policy,
             "removed_at": self.removed_at,
             "schedule": self.schedule.as_dict(),
@@ -324,6 +335,26 @@ def list_tasks(path: Path) -> list[Task]:
         raise
     except sqlite3.Error as error:
         raise TaskError("tasks could not be listed") from error
+    return [_task_from_row(row) for row in rows]
+
+
+def list_due_tasks(path: Path, current_time: str) -> list[Task]:
+    try:
+        with _task_connection(path) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM tasks
+                WHERE enabled = 1
+                  AND removed_at IS NULL
+                  AND next_run_at <= ?
+                ORDER BY next_run_at, id
+                """,
+                (current_time,),
+            ).fetchall()
+    except TaskError:
+        raise
+    except sqlite3.Error as error:
+        raise TaskError("due Tasks could not be selected") from error
     return [_task_from_row(row) for row in rows]
 
 
@@ -464,7 +495,9 @@ def _task_input_from_values(values: Mapping[str, Any]) -> TaskInput:
     source_ref = _optional_string(values, "source_ref", maximum=2_000)
     source_summary = _required_string(values, "source_summary", maximum=8_000)
     schedule = _validate_schedule(values.get("schedule"))
-    timezone_name, task_timezone = _validate_timezone(values.get("timezone"))
+    timezone_name, task_timezone = _validate_timezone(
+        values.get("timezone", DEFAULT_TIMEZONE)
+    )
     next_run_at, next_run_datetime = _validate_next_run_at(values.get("next_run_at"))
     local_next_run = next_run_datetime.astimezone(task_timezone)
     if (
