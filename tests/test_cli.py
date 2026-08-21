@@ -266,7 +266,7 @@ class RunTasksCliTests(unittest.TestCase):
                         "fts5": True,
                         "journal_mode": "wal",
                         "path": str(home / "var" / "data" / "runtasks.sqlite3"),
-                        "schema_version": 4,
+                        "schema_version": 5,
                     },
                     "home": str(home),
                     "initialized": True,
@@ -301,7 +301,7 @@ class RunTasksCliTests(unittest.TestCase):
 
             self.assertEqual(initialization.returncode, 0, initialization.stderr)
             self.assertEqual(status.returncode, 0, status.stderr)
-            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 4)
+            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 5)
             self.assertEqual(tasks.returncode, 0, tasks.stderr)
             self.assertEqual(json.loads(tasks.stdout)["tasks"], [])
 
@@ -334,6 +334,8 @@ class RunTasksCliTests(unittest.TestCase):
             task = json.loads(added.stdout)["task"]
             database_file = home / "var" / "data" / "runtasks.sqlite3"
             with sqlite3.connect(database_file) as connection:
+                connection.execute("DROP TABLE decisions")
+                connection.execute("DROP TABLE decision_fts")
                 connection.execute("DROP TABLE runs")
                 connection.execute("DROP TABLE run_fts")
                 connection.execute("DELETE FROM schema_migrations WHERE version >= 3")
@@ -344,9 +346,59 @@ class RunTasksCliTests(unittest.TestCase):
             history = self.run_cli(home, "--json", "history", task["id"])
 
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 4)
+            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 5)
             self.assertEqual(json.loads(shown.stdout)["task"], task)
             self.assertEqual(json.loads(history.stdout)["runs"], [])
+
+    def test_init_migrates_schema_four_without_losing_run_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "runtime-home"
+            self.assertEqual(self.run_cli(home, "init").returncode, 0)
+            task_payload = {
+                "name": "Retained schema-four reminder",
+                "description": "Keep this Task and its Run during migration.",
+                "source_type": "direct",
+                "source_ref": None,
+                "source_summary": "Schema-four migration coverage.",
+                "schedule": {"type": "daily", "time": "09:00"},
+                "timezone": "Asia/Singapore",
+                "next_run_at": "2026-09-01T01:00:00Z",
+                "action_mode": "notify",
+                "handler": "manual_notification",
+                "policy": {"message": "Review retained migration state."},
+            }
+            added = self.run_cli(
+                home,
+                "--json",
+                "task",
+                "add",
+                "--json",
+                json.dumps(task_payload),
+            )
+            self.assertEqual(added.returncode, 0, added.stderr)
+            task = json.loads(added.stdout)["task"]
+            executed = self.run_cli(home, "run", task["id"], "--json")
+            self.assertEqual(executed.returncode, 0, executed.stderr)
+            retained_run = json.loads(executed.stdout)["run"]
+            database_file = home / "var" / "data" / "runtasks.sqlite3"
+            with sqlite3.connect(database_file) as connection:
+                connection.execute("DROP TABLE decisions")
+                connection.execute("DROP TABLE decision_fts")
+                connection.execute("DELETE FROM schema_migrations WHERE version = 5")
+                version = connection.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+            self.assertEqual(version, 4)
+
+            migrated = self.run_cli(home, "init")
+            status = self.run_cli(home, "status", "--json")
+            history = self.run_cli(home, "history", task["id"], "--json")
+            decisions = self.run_cli(home, "decisions", "--json")
+
+            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 5)
+            self.assertEqual(json.loads(history.stdout)["runs"], [retained_run])
+            self.assertEqual(json.loads(decisions.stdout)["decisions"], [])
 
 
 if __name__ == "__main__":

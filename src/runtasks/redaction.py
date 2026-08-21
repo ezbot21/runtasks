@@ -65,10 +65,18 @@ class Redactor:
         if isinstance(value, tuple):
             return [self.value(item) for item in value]
         if isinstance(value, dict):
-            return {
-                str(item_key): self.value(item, key=str(item_key))
-                for item_key, item in value.items()
-            }
+            redacted: dict[str, object] = {}
+            items = sorted(value.items(), key=lambda item: str(item[0]))
+            for item_key, item in items:
+                original_key = str(item_key)
+                safe_key = self.text(original_key)
+                candidate = safe_key
+                suffix = 2
+                while candidate in redacted:
+                    candidate = f"{safe_key}#{suffix}"
+                    suffix += 1
+                redacted[candidate] = self.value(item, key=original_key)
+            return redacted
         return value
 
 

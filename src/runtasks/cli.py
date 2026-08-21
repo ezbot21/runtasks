@@ -20,6 +20,14 @@ from runtasks.database import (
     initialize_database,
     inspect_database,
 )
+from runtasks.decisions import (
+    Decision,
+    DecisionError,
+    get_decision,
+    list_decisions,
+    respond_to_decision,
+    search_decisions,
+)
 from runtasks.handlers import build_handler_registry
 from runtasks.paths import RuntimePaths
 from runtasks.redaction import DEFAULT_REDACTOR, Redactor
@@ -146,8 +154,26 @@ def build_parser() -> argparse.ArgumentParser:
     history_parser.add_argument("task_id", nargs="?")
     _add_output_json_flag(history_parser)
 
+    decisions_parser = subparsers.add_parser(
+        "decisions", help="list human approval Decisions"
+    )
+    _add_output_json_flag(decisions_parser)
+
+    decision_parser = subparsers.add_parser(
+        "decision", help="inspect or respond to a Decision"
+    )
+    decision_actions = decision_parser.add_subparsers(
+        dest="decision_command", required=True
+    )
+    for action in ("show", "approve", "reject"):
+        action_parser = decision_actions.add_parser(
+            action, help=f"{action} a Decision"
+        )
+        action_parser.add_argument("decision_id")
+        _add_output_json_flag(action_parser)
+
     search_parser = subparsers.add_parser(
-        "search", help="search registered Tasks and Runs"
+        "search", help="search registered Tasks, Runs, and Decisions"
     )
     search_parser.add_argument("query")
     _add_output_json_flag(search_parser)
@@ -201,6 +227,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
             )
         if options.command == "history":
             return _history(paths, options.task_id, options.as_json)
+        if options.command == "decisions":
+            return _decisions(paths, options.as_json)
+        if options.command == "decision":
+            return _decision_command(paths, options)
         if options.command == "search":
             return _search(paths, options.query, options.as_json)
     except TaskConflictError as error:
@@ -210,6 +240,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         DatabaseError,
         SecretConfigurationError,
         ExternalAdapterError,
+        DecisionError,
         RunError,
         SchedulerValidationError,
         TaskError,
@@ -233,7 +264,15 @@ def _json_output_requested(arguments: Sequence[str]) -> bool:
     if arguments[0] == "--json":
         return True
     command = arguments[0]
-    if command in {"history", "run", "run-due", "search", "status"}:
+    if command in {
+        "decision",
+        "decisions",
+        "history",
+        "run",
+        "run-due",
+        "search",
+        "status",
+    }:
         return "--json" in arguments[1:]
     if command != "task" or len(arguments) < 2:
         return False
@@ -481,27 +520,113 @@ def _print_run(run: Run) -> None:
     )
 
 
+def _decisions(paths: RuntimePaths, as_json: bool) -> int:
+    decisions = list_decisions(paths.database_file)
+    if as_json:
+        _print_json(
+            {
+                "decisions": [decision.as_dict() for decision in decisions],
+                "status": "ok",
+            }
+        )
+    elif not decisions:
+        _safe_print("No Decisions recorded.")
+    else:
+        for decision in decisions:
+            _safe_print(
+                f"{decision.id}  Task {decision.task_id}  "
+                f"[{decision.status}]  {decision.reason}"
+            )
+    return 0
+
+
+def _decision_command(paths: RuntimePaths, options: argparse.Namespace) -> int:
+    as_json = bool(options.as_json)
+    if options.decision_command == "show":
+        decision = get_decision(paths.database_file, options.decision_id)
+        return _show_decision(decision, as_json)
+    if options.decision_command in {"approve", "reject"}:
+        decision = respond_to_decision(
+            paths.database_file,
+            options.decision_id,
+            options.decision_command,
+        )
+        if as_json:
+            _print_json(
+                {"decision": decision.as_dict(), "status": decision.status}
+            )
+        else:
+            verb = (
+                "Approved"
+                if options.decision_command == "approve"
+                else "Rejected"
+            )
+            _safe_print(f"{verb} Decision {decision.id} for Task {decision.task_id}.")
+        return 0
+    raise DecisionError("unknown Decision command")
+
+
+def _show_decision(decision: Decision, as_json: bool) -> int:
+    if as_json:
+        _print_json({"decision": decision.as_dict(), "status": "ok"})
+        return 0
+    _safe_print(f"Decision {decision.id}")
+    _safe_print(f"Status: {decision.status}")
+    _safe_print(f"Task: {decision.task_id}")
+    _safe_print(f"Requesting Run: {decision.run_id}")
+    _safe_print(f"Reason: {decision.reason}")
+    _safe_print(f"Validation: {decision.validation_summary}")
+    _safe_print(f"Rollback: {decision.rollback_summary}")
+    _safe_print(f"Plan hash: {decision.plan_hash}")
+    _safe_print("Plan:")
+    for line in json.dumps(decision.plan, indent=2, sort_keys=True).splitlines():
+        _safe_print(f"  {line}")
+    if decision.response is not None:
+        _safe_print(
+            f"Response: {decision.response.action} by "
+            f"{decision.response.responded_by} via {decision.response.channel} "
+            f"at {decision.response.responded_at}"
+        )
+    if decision.approval_run_id is not None:
+        _safe_print(f"Approval Run: {decision.approval_run_id}")
+    _safe_print(f"Created: {decision.created_at}")
+    _safe_print(f"Updated: {decision.updated_at}")
+    return 0
+
+
 def _search(paths: RuntimePaths, query: str, as_json: bool) -> int:
     tasks = search_tasks(paths.database_file, query)
     runs = search_runs(paths.database_file, query)
+    decisions = search_decisions(paths.database_file, query)
     results = [
         *({"task": task.as_dict(), "type": "task"} for task in tasks),
         *({"run": run.as_dict(), "type": "run"} for run in runs),
+        *(
+            {"decision": decision.as_dict(), "type": "decision"}
+            for decision in decisions
+        ),
     ]
     if as_json:
         _print_json({"query": query, "results": results, "status": "ok"})
     elif not results:
-        _safe_print("No matching Tasks or Runs.")
+        _safe_print("No matching Tasks, Runs, or Decisions.")
     else:
         for result in results:
             if result["type"] == "task":
                 task_payload = cast(dict[str, object], result["task"])
                 _safe_print(f"task  {task_payload['id']}  {task_payload['name']}")
-            else:
+            elif result["type"] == "run":
                 run_payload = cast(dict[str, object], result["run"])
                 _safe_print(
                     f"run  {run_payload['id']}  {run_payload['task_name']}  "
                     f"[{run_payload['status']}]"
+                )
+            else:
+                decision_payload = cast(dict[str, object], result["decision"])
+                _safe_print(
+                    f"decision  {decision_payload['id']}  "
+                    f"Task {decision_payload['task_id']}  "
+                    f"[{decision_payload['status']}]"
                 )
     return 0
 

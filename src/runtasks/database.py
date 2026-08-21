@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any, Iterator
 
 
-LATEST_SCHEMA_VERSION = 4
+LATEST_SCHEMA_VERSION = 5
 BUSY_TIMEOUT_MS = 5_000
 
 
@@ -101,6 +101,9 @@ def _apply_migrations(connection: sqlite3.Connection) -> bool:
         if current_version < 4:
             _add_scheduled_run_claims(connection)
             _record_migration(connection, 4)
+        if current_version < 5:
+            _create_decisions(connection)
+            _record_migration(connection, 5)
         connection.commit()
     except Exception:
         connection.rollback()
@@ -260,6 +263,147 @@ def _add_scheduled_run_claims(connection: sqlite3.Connection) -> None:
         CREATE UNIQUE INDEX runs_scheduled_occurrence_idx
         ON runs(task_id, scheduled_for)
         WHERE trigger = 'scheduled'
+        """
+    )
+
+
+def _create_decisions(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE decisions (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id),
+            run_id TEXT NOT NULL UNIQUE REFERENCES runs(id),
+            status TEXT NOT NULL CHECK (
+                status IN ('pending', 'approved', 'rejected')
+            ),
+            plan_json TEXT NOT NULL,
+            plan_hash TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            validation_summary TEXT NOT NULL,
+            rollback_summary TEXT NOT NULL,
+            response_action TEXT CHECK (
+                response_action IS NULL OR response_action IN ('approve', 'reject')
+            ),
+            response_channel TEXT,
+            responded_by TEXT,
+            responded_at TEXT,
+            approval_run_id TEXT UNIQUE REFERENCES runs(id),
+            execution_scheduled_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK (
+                (
+                    status = 'pending'
+                    AND response_action IS NULL
+                    AND response_channel IS NULL
+                    AND responded_by IS NULL
+                    AND responded_at IS NULL
+                    AND approval_run_id IS NULL
+                    AND execution_scheduled_at IS NULL
+                )
+                OR (
+                    status = 'rejected'
+                    AND response_action = 'reject'
+                    AND response_channel IS NOT NULL
+                    AND responded_by IS NOT NULL
+                    AND responded_at IS NOT NULL
+                    AND approval_run_id IS NULL
+                    AND execution_scheduled_at IS NULL
+                )
+                OR (
+                    status = 'approved'
+                    AND response_action = 'approve'
+                    AND response_channel IS NOT NULL
+                    AND responded_by IS NOT NULL
+                    AND responded_at IS NOT NULL
+                    AND approval_run_id IS NOT NULL
+                    AND execution_scheduled_at IS NOT NULL
+                )
+            )
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX decisions_status_idx ON decisions(status, created_at DESC)"
+    )
+    connection.execute(
+        "CREATE INDEX decisions_task_idx ON decisions(task_id, created_at DESC)"
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER decisions_immutable_plan
+        BEFORE UPDATE OF task_id, run_id, plan_json, plan_hash, reason,
+                         validation_summary, rollback_summary ON decisions
+        WHEN old.task_id != new.task_id
+          OR old.run_id != new.run_id
+          OR old.plan_json != new.plan_json
+          OR old.plan_hash != new.plan_hash
+          OR old.reason != new.reason
+          OR old.validation_summary != new.validation_summary
+          OR old.rollback_summary != new.rollback_summary
+        BEGIN
+            SELECT RAISE(ABORT, 'Decision plan and evidence are immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER decisions_resolved_immutable
+        BEFORE UPDATE ON decisions
+        WHEN old.status != 'pending'
+        BEGIN
+            SELECT RAISE(ABORT, 'resolved Decision audit records are immutable');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER decisions_no_delete
+        BEFORE DELETE ON decisions
+        BEGIN
+            SELECT RAISE(ABORT, 'Decision audit records cannot be deleted');
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE VIRTUAL TABLE decision_fts USING fts5(
+            decision_id UNINDEXED,
+            reason,
+            validation_summary,
+            rollback_summary
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER decisions_fts_insert AFTER INSERT ON decisions BEGIN
+            INSERT INTO decision_fts(
+                decision_id, reason, validation_summary, rollback_summary
+            ) VALUES (
+                new.id, new.reason, new.validation_summary, new.rollback_summary
+            );
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER decisions_fts_update AFTER UPDATE ON decisions BEGIN
+            DELETE FROM decision_fts WHERE decision_id = old.id;
+            INSERT INTO decision_fts(
+                decision_id, reason, validation_summary, rollback_summary
+            ) VALUES (
+                new.id, new.reason, new.validation_summary, new.rollback_summary
+            );
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER decisions_fts_delete AFTER DELETE ON decisions BEGIN
+            DELETE FROM decision_fts WHERE decision_id = old.id;
+        END
         """
     )
 

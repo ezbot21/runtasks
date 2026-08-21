@@ -24,11 +24,20 @@ class HandlerContext:
 
 
 @dataclass(frozen=True)
+class DecisionRequest:
+    plan: dict[str, object]
+    reason: str
+    validation_summary: str
+    rollback_summary: str
+
+
+@dataclass(frozen=True)
 class HandlerOutcome:
     status: str
     summary: str
     details: dict[str, object]
     external_log_ref: str | None = None
+    decision: DecisionRequest | None = None
 
 
 class Handler(Protocol):
@@ -142,12 +151,19 @@ class FixtureHandler:
         if not isinstance(raw_outcome, dict):
             raise HandlerError("fixture handler outcome must be an object")
         outcome = cast(dict[object, object], raw_outcome)
-        if set(outcome) - {"status", "summary", "details", "external_log_ref"}:
+        if set(outcome) - {
+            "status",
+            "summary",
+            "details",
+            "external_log_ref",
+            "decision",
+        }:
             raise HandlerError("fixture handler outcome contains unsupported fields")
         status = outcome.get("status")
         summary = outcome.get("summary")
         details = outcome.get("details")
         log_reference = outcome.get("external_log_ref")
+        decision_value = outcome.get("decision")
         if not isinstance(status, str) or not isinstance(summary, str):
             raise HandlerError("fixture handler outcome is invalid")
         if not isinstance(details, dict):
@@ -157,6 +173,7 @@ class FixtureHandler:
         safe_details = self._redactor.value(details)
         if not isinstance(safe_details, dict):
             raise HandlerError("fixture handler details could not be normalized")
+        decision = self._parse_decision_request(decision_value)
         return HandlerOutcome(
             status=status,
             summary=self._redactor.text(summary),
@@ -166,6 +183,38 @@ class FixtureHandler:
                 if log_reference is None
                 else self._redactor.text(log_reference)
             ),
+            decision=decision,
+        )
+
+    def _parse_decision_request(self, value: object) -> DecisionRequest | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise HandlerError("fixture handler Decision request must be an object")
+        request = cast(dict[object, object], value)
+        if set(request) != {
+            "plan",
+            "reason",
+            "validation_summary",
+            "rollback_summary",
+        }:
+            raise HandlerError("fixture handler Decision request is invalid")
+        plan = request.get("plan")
+        reason = request.get("reason")
+        validation_summary = request.get("validation_summary")
+        rollback_summary = request.get("rollback_summary")
+        if not isinstance(plan, dict):
+            raise HandlerError("fixture handler Decision plan must be an object")
+        if not all(
+            isinstance(text, str)
+            for text in (reason, validation_summary, rollback_summary)
+        ):
+            raise HandlerError("fixture handler Decision summaries are invalid")
+        return DecisionRequest(
+            plan=cast(dict[str, object], plan),
+            reason=self._redactor.text(cast(str, reason)),
+            validation_summary=self._redactor.text(cast(str, validation_summary)),
+            rollback_summary=self._redactor.text(cast(str, rollback_summary)),
         )
 
 

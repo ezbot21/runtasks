@@ -1,6 +1,6 @@
 # RunTasks
 
-RunTasks is a portable Python application for durable, reviewed operational tasks. It provides an isolated runtime home, a versioned SQLite Task and Run registry, validated lifecycle commands, a deterministic due-task scheduler, bounded named-handler execution, searchable history, and FTS5-backed search.
+RunTasks is a portable Python application for durable, reviewed operational tasks. It provides an isolated runtime home, a versioned SQLite Task, Run, and Decision registry, validated lifecycle commands, a deterministic due-task scheduler, bounded named-handler execution, immutable human approvals, searchable history, and FTS5-backed search.
 
 ## Requirements
 
@@ -61,6 +61,10 @@ bin/runtasks run <task-id>
 bin/runtasks run-due
 bin/runtasks history
 bin/runtasks history <task-id>
+bin/runtasks decisions
+bin/runtasks decision show <decision-id>
+bin/runtasks decision approve <decision-id>
+bin/runtasks decision reject <decision-id>
 bin/runtasks search "OAuth safety"
 ```
 
@@ -158,20 +162,47 @@ The current execution modes are deliberately bounded:
 Handlers and external adapters exchange structured requests and outcomes. Successful,
 failed, and manual-action-due Runs retain Task identity, timestamps, a redacted summary,
 structured redacted details, and an optional redacted external log reference. Run
-triggers distinguish `scheduled`, `manual`, and future `approval` execution in the same
-history. Execution failures return exit status 1 while still recording inspectable history; validation
-failures return exit status 2.
+triggers distinguish `scheduled`, `manual`, and separately queued `approval` execution
+in the same history. Execution failures return exit status 1 while still recording
+inspectable history; validation failures return exit status 2.
 
 Use `runtasks history` for all Runs or `runtasks history <task-id>` for one Task.
-Both commands support `--json`. FTS5 search returns matching Tasks and matching Run
-summaries/details together, so validation evidence is available through the same public
-`search` command.
+Both commands support `--json`. FTS5 search returns matching Tasks, Run
+summaries/details, and Decision summaries together through the same public `search`
+command.
 
 Credential redaction is centralized across CLI output and stored execution outcomes.
 It covers configured `RUNTASKS_*` secret values and common bearer-token, API-key,
 credentialed-URL, private-key, GitHub, AWS, Slack, Telegram, and JWT shapes. RunTasks
 stores only the redacted structured outcome; larger logs remain external and are
 represented by an optional redacted reference.
+
+## Immutable Decisions
+
+An `approved-procedure` handler may finish its read-only check by returning a structured
+Decision request containing one exact plan, a reason, a validation summary, and a
+rollback summary. The plan must name the Task handler and include a bounded operation,
+its complete parameter object, validation instructions, and rollback instructions;
+additional evidence is optional. RunTasks rejects secret-bearing operation fields,
+redacts evidence values and keys, serializes every stored plan field as strict canonical
+JSON, hashes that exact representation with SHA-256, and creates the pending Decision in
+the same transaction that moves the requesting Run to `decision-required`. Database
+triggers prevent later edits to the plan, response, or audit record.
+
+Use `runtasks decisions` and `runtasks decision show <decision-id>` to inspect pending
+and answered Decisions in human or JSON mode. `decision reject` closes a pending
+Decision without invoking a handler or creating mutation work. `decision approve`
+authorizes only the stored plan hash and atomically creates one claimed approval Run for
+a separate runner to execute. Repeating the same response returns the existing state;
+a conflicting response fails with a nonzero status. Concurrent approvals cannot create
+more than one approval Run. A pending Decision cannot be approved after its Task has
+been removed, although it can still be rejected to close the audit record.
+
+Decision reason, validation summary, and rollback summary text participates in the
+public FTS5-backed `search` command alongside Task and Run matches. Plan evidence is
+redacted before storage and output. The current production Pi MCP adapter handler still
+performs only its bounded read-only inspection; a later handler feature supplies its
+real update plans and executes claimed approval Runs.
 
 Initialization creates:
 

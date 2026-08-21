@@ -12,7 +12,9 @@ import uuid
 
 from runtasks.adapters import ExternalAdapter
 from runtasks.database import LATEST_SCHEMA_VERSION, database_connection
+from runtasks.decisions import record_pending_decision
 from runtasks.handlers import (
+    DecisionRequest,
     HandlerContext,
     HandlerError,
     HandlerOutcome,
@@ -174,7 +176,7 @@ def _execute_claimed_run(
             HandlerContext(run_id=run_id, task=task, trigger=trigger),
             external_adapter,
         )
-        safe_outcome = _normalize_handler_outcome(outcome, redactor)
+        safe_outcome = _normalize_handler_outcome(outcome, redactor, task)
     except Exception as error:
         safe_outcome = HandlerOutcome(
             status="failed",
@@ -186,15 +188,26 @@ def _execute_claimed_run(
             },
         )
 
-    _transition_run(
-        path,
-        run_id,
-        safe_outcome.status,
-        finished_at=timestamp_factory(),
-        summary=safe_outcome.summary,
-        details=safe_outcome.details,
-        external_log_ref=safe_outcome.external_log_ref,
-    )
+    finished_at = timestamp_factory()
+    if safe_outcome.decision is not None:
+        record_pending_decision(
+            path,
+            run_id,
+            task,
+            safe_outcome,
+            safe_outcome.decision,
+            finished_at=finished_at,
+        )
+    else:
+        _transition_run(
+            path,
+            run_id,
+            safe_outcome.status,
+            finished_at=finished_at,
+            summary=safe_outcome.summary,
+            details=safe_outcome.details,
+            external_log_ref=safe_outcome.external_log_ref,
+        )
     return get_run(path, run_id)
 
 
@@ -439,6 +452,7 @@ def _transition_run(
 def _normalize_handler_outcome(
     outcome: HandlerOutcome,
     redactor: Redactor,
+    task: Task,
 ) -> HandlerOutcome:
     if outcome.status not in _TERMINAL_STATUSES:
         raise HandlerError("handler returned an invalid Run status")
@@ -451,6 +465,11 @@ def _normalize_handler_outcome(
         raise HandlerError("handler returned invalid details")
     details = cast(dict[str, object], safe_details)
     _canonical_details(details)
+    decision = _normalize_decision_request(outcome.decision, redactor, task)
+    if outcome.status == "decision-required" and decision is None:
+        raise HandlerError("handler omitted the required Decision request")
+    if outcome.status != "decision-required" and decision is not None:
+        raise HandlerError("handler requested a Decision with an incompatible status")
     log_reference = outcome.external_log_ref
     if log_reference is not None and (
         not isinstance(log_reference, str)
@@ -467,6 +486,81 @@ def _normalize_handler_outcome(
             if log_reference is None
             else redactor.text(log_reference.strip())
         ),
+        decision=decision,
+    )
+
+
+def _normalize_decision_request(
+    request: DecisionRequest | None,
+    redactor: Redactor,
+    task: Task,
+) -> DecisionRequest | None:
+    if request is None:
+        return None
+    if task.action_mode != "approved-procedure":
+        raise HandlerError("only an approved-procedure handler can request a Decision")
+    if not request.plan or not all(
+        isinstance(key, str) for key in request.plan
+    ):
+        raise HandlerError("handler returned an invalid Decision plan")
+    required_fields = {
+        "handler",
+        "operation",
+        "parameters",
+        "rollback",
+        "validation",
+    }
+    if not required_fields.issubset(request.plan):
+        raise HandlerError(
+            "handler Decision plan is missing authorization fields"
+        )
+    operation = request.plan.get("operation")
+    parameters = request.plan.get("parameters")
+    validation = request.plan.get("validation")
+    rollback = request.plan.get("rollback")
+    if not isinstance(operation, str) or not operation.strip():
+        raise HandlerError("handler Decision operation is invalid")
+    if not isinstance(parameters, dict):
+        raise HandlerError("handler Decision parameters are invalid")
+    if not isinstance(validation, dict) or not validation:
+        raise HandlerError("handler Decision validation is invalid")
+    if not isinstance(rollback, dict) or not rollback:
+        raise HandlerError("handler Decision rollback is invalid")
+    operation_plan = {
+        key: value for key, value in request.plan.items() if key != "evidence"
+    }
+    safe_operation_plan = redactor.value(operation_plan)
+    if safe_operation_plan != operation_plan:
+        raise HandlerError(
+            "handler Decision operation contains secret-bearing values"
+        )
+    plan = dict(operation_plan)
+    if "evidence" in request.plan:
+        plan["evidence"] = redactor.value(request.plan["evidence"])
+    if plan.get("handler") != task.handler:
+        raise HandlerError(
+            "handler Decision plan must name the requesting Task handler"
+        )
+    plan_json = _canonical_details(plan)
+    if len(plan_json.encode("utf-8")) > 65_536:
+        raise HandlerError("handler Decision plan is too large")
+    summaries = (
+        ("reason", request.reason),
+        ("validation summary", request.validation_summary),
+        ("rollback summary", request.rollback_summary),
+    )
+    normalized: list[str] = []
+    for name, value in summaries:
+        if not isinstance(value, str) or not value.strip():
+            raise HandlerError(f"handler Decision {name} is invalid")
+        if len(value) > 8_000:
+            raise HandlerError(f"handler Decision {name} is too long")
+        normalized.append(redactor.text(value.strip()))
+    return DecisionRequest(
+        plan=plan,
+        reason=normalized[0],
+        validation_summary=normalized[1],
+        rollback_summary=normalized[2],
     )
 
 
@@ -474,6 +568,7 @@ def _canonical_details(details: dict[str, object]) -> str:
     try:
         return json.dumps(
             details,
+            allow_nan=False,
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
