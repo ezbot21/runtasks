@@ -266,7 +266,7 @@ class RunTasksCliTests(unittest.TestCase):
                         "fts5": True,
                         "journal_mode": "wal",
                         "path": str(home / "var" / "data" / "runtasks.sqlite3"),
-                        "schema_version": 1,
+                        "schema_version": 2,
                     },
                     "home": str(home),
                     "initialized": True,
@@ -275,6 +275,35 @@ class RunTasksCliTests(unittest.TestCase):
             )
             for relative_directory in ("config", "var/data", "var/logs", "var/backups"):
                 self.assertTrue((home / relative_directory).is_dir())
+
+    def test_init_migrates_a_bootstrap_database_to_the_task_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "runtime-home"
+            database_file = home / "var" / "data" / "runtasks.sqlite3"
+            database_file.parent.mkdir(parents=True)
+            with sqlite3.connect(database_file) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE schema_migrations (
+                        version INTEGER PRIMARY KEY,
+                        applied_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?)",
+                    ("2026-01-01T00:00:00+00:00",),
+                )
+
+            initialization = self.run_cli(home, "init")
+            status = self.run_cli(home, "status", "--json")
+            tasks = self.run_cli(home, "--json", "task", "list")
+
+            self.assertEqual(initialization.returncode, 0, initialization.stderr)
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 2)
+            self.assertEqual(tasks.returncode, 0, tasks.stderr)
+            self.assertEqual(json.loads(tasks.stdout)["tasks"], [])
 
 
 if __name__ == "__main__":

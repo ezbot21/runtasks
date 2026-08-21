@@ -1,6 +1,6 @@
 # RunTasks
 
-RunTasks is a portable Python application for durable, reviewed operational tasks. This bootstrap release provides an isolated runtime home, versioned SQLite initialization, and CLI health reporting.
+RunTasks is a portable Python application for durable, reviewed operational tasks. It provides an isolated runtime home, a versioned SQLite Task registry, validated lifecycle commands, and FTS5-backed Task search.
 
 ## Requirements
 
@@ -33,6 +33,66 @@ bin/runtasks init
 bin/runtasks status
 bin/runtasks status --json
 ```
+
+## Task registry
+
+Tasks are managed only through the validated CLI. Structured output uses the global
+`--json` flag before the command; `task add` and `task update` use their own `--json`
+option for the input payload. `--output-json` is also available after those two
+commands.
+
+```bash
+bin/runtasks task add --json "$TASK_PAYLOAD"
+bin/runtasks --json task add --json "$TASK_PAYLOAD"
+bin/runtasks task list
+bin/runtasks task list --json
+bin/runtasks task show <task-id>
+bin/runtasks task update <task-id> --json '{"description":"Reviewed policy"}'
+bin/runtasks task disable <task-id>
+bin/runtasks task enable <task-id>
+bin/runtasks task remove <task-id>
+bin/runtasks search "OAuth safety"
+```
+
+An add payload has this shape:
+
+```json
+{
+  "name": "Pi MCP adapter update check",
+  "description": "Review stable adapter releases every 14 days.",
+  "source_type": "direct",
+  "source_ref": null,
+  "source_summary": "Escalate important or uncertain adapter changes.",
+  "schedule": {"type": "interval-days", "days": 14, "time": "09:00"},
+  "timezone": "Asia/Singapore",
+  "next_run_at": "2026-09-01T01:00:00Z",
+  "action_mode": "approved-procedure",
+  "handler": "pi_mcp_adapter",
+  "policy": {
+    "important_conditions": ["security", "OAuth safety"],
+    "approval_required": true
+  }
+}
+```
+
+Supported schedules are `daily` (`type` and `time`) and `interval-days` (`type`,
+`days`, and `time`). Times use `HH:MM`; `next_run_at` must be an offset-aware RFC
+3339 timestamp that falls at the configured local schedule time. Supported action
+modes are `check`, `notify`, and `approved-procedure`. The bounded handler registry
+currently accepts `manual_notification` for `notify` Tasks and `pi_mcp_adapter` for
+`check` or `approved-procedure` Tasks. Handler execution is added separately; Task
+registration never interprets policy prose as a command.
+
+Task updates are partial replacements of the supplied fields and preserve the Task
+ID and creation timestamp. Disabled Tasks remain visible and are explicitly marked
+unavailable for scheduled execution. Removal creates an internal tombstone: the Task
+leaves Task lists and search results and cannot be enabled or updated, but `task show`
+continues to expose it by ID with an explicit `removed` status. Its stable database
+row remains available as a foreign-key anchor, so retained user-visible history can
+still resolve its Task instead of becoming orphaned. Its former identity and policy
+fingerprints are released, allowing a later fresh registration. Identity-equivalent
+and policy-equivalent adds return a nonzero,
+update-oriented duplicate outcome rather than inserting another Task.
 
 Initialization creates:
 
