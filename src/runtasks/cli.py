@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any, NoReturn, Sequence
+from typing import Any, Mapping, NoReturn, Sequence, cast
+
+from runtasks.adapters import ExternalAdapterError, build_external_adapter
 
 from runtasks.config import (
     AppSettings,
@@ -18,7 +20,10 @@ from runtasks.database import (
     initialize_database,
     inspect_database,
 )
+from runtasks.handlers import build_handler_registry
 from runtasks.paths import RuntimePaths
+from runtasks.redaction import DEFAULT_REDACTOR, Redactor
+from runtasks.runs import Run, RunError, execute_manual_run, list_runs, search_runs
 from runtasks.secrets import SecretConfigurationError, load_secret_settings
 from runtasks.tasks import (
     Task,
@@ -36,8 +41,10 @@ from runtasks.tasks import (
 )
 
 
+EXIT_EXECUTION_ERROR = 1
 EXIT_VALIDATION_ERROR = 2
 _JSON_ARGUMENT_ERRORS = False
+_ACTIVE_REDACTOR = DEFAULT_REDACTOR
 
 
 class CliArgumentParser(argparse.ArgumentParser):
@@ -115,7 +122,17 @@ def build_parser() -> argparse.ArgumentParser:
         lifecycle_parser.add_argument("task_id")
         _add_output_json_flag(lifecycle_parser)
 
-    search_parser = subparsers.add_parser("search", help="search registered tasks")
+    run_parser = subparsers.add_parser("run", help="run a Task manually")
+    run_parser.add_argument("task_id")
+    _add_output_json_flag(run_parser)
+
+    history_parser = subparsers.add_parser("history", help="list Run history")
+    history_parser.add_argument("task_id", nargs="?")
+    _add_output_json_flag(history_parser)
+
+    search_parser = subparsers.add_parser(
+        "search", help="search registered Tasks and Runs"
+    )
     search_parser.add_argument("query")
     _add_output_json_flag(search_parser)
 
@@ -141,7 +158,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         paths = RuntimePaths.from_environment()
         settings = load_app_settings(paths)
-        load_secret_settings(paths)
+        secret_settings = load_secret_settings(paths)
+        global _ACTIVE_REDACTOR
+        _ACTIVE_REDACTOR = Redactor.from_secret_settings(secret_settings)
         if options.command == "status":
             return _status(paths, settings, options.as_json)
         if options.command == "init":
@@ -150,6 +169,15 @@ def main(arguments: Sequence[str] | None = None) -> int:
             return _initialize(paths)
         if options.command == "task":
             return _task_command(paths, options)
+        if options.command == "run":
+            return _run_task(
+                paths,
+                options.task_id,
+                options.as_json,
+                secret_settings,
+            )
+        if options.command == "history":
+            return _history(paths, options.task_id, options.as_json)
         if options.command == "search":
             return _search(paths, options.query, options.as_json)
     except TaskConflictError as error:
@@ -158,6 +186,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         ConfigurationError,
         DatabaseError,
         SecretConfigurationError,
+        ExternalAdapterError,
+        RunError,
         TaskError,
     ) as error:
         return _report_error(str(error), getattr(options, "as_json", False))
@@ -179,7 +209,7 @@ def _json_output_requested(arguments: Sequence[str]) -> bool:
     if arguments[0] == "--json":
         return True
     command = arguments[0]
-    if command in {"search", "status"}:
+    if command in {"history", "run", "search", "status"}:
         return "--json" in arguments[1:]
     if command != "task" or len(arguments) < 2:
         return False
@@ -204,9 +234,9 @@ def _initialize(paths: RuntimePaths) -> int:
     changed = changed or database_changed
 
     if changed:
-        print(f"Initialized RunTasks at {paths.home}")
+        _safe_print(f"Initialized RunTasks at {paths.home}")
     else:
-        print(f"RunTasks is already initialized at {paths.home}")
+        _safe_print(f"RunTasks is already initialized at {paths.home}")
     return 0
 
 
@@ -217,9 +247,9 @@ def _status(paths: RuntimePaths, settings: AppSettings, as_json: bool) -> int:
     if as_json:
         _print_json(payload)
     elif initialized:
-        print(f"RunTasks is initialized at {paths.home}")
+        _safe_print(f"RunTasks is initialized at {paths.home}")
     else:
-        print(f"RunTasks is not initialized at {paths.home}")
+        _safe_print(f"RunTasks is not initialized at {paths.home}")
     return 0
 
 
@@ -262,10 +292,10 @@ def _task_command(paths: RuntimePaths, options: argparse.Namespace) -> int:
         if as_json:
             _print_json({"status": "ok", "tasks": [task.as_dict() for task in tasks]})
         elif not tasks:
-            print("No Tasks registered.")
+            _safe_print("No Tasks registered.")
         else:
             for task in tasks:
-                print(f"{task.id}  {task.name}  [{task.human_availability}]")
+                _safe_print(f"{task.id}  {task.name}  [{task.human_availability}]")
         return 0
 
     if options.task_command == "show":
@@ -282,7 +312,7 @@ def _task_command(paths: RuntimePaths, options: argparse.Namespace) -> int:
         if as_json:
             _print_json({"status": "created", "task": task.as_dict()})
         else:
-            print(f"Created Task {task.id}: {task.name}")
+            _safe_print(f"Created Task {task.id}: {task.name}")
         return 0
 
     if options.task_command == "update":
@@ -292,7 +322,7 @@ def _task_command(paths: RuntimePaths, options: argparse.Namespace) -> int:
         if as_json:
             _print_json({"status": "updated", "task": task.as_dict()})
         else:
-            print(f"Updated Task {task.id}: {task.name}")
+            _safe_print(f"Updated Task {task.id}: {task.name}")
         return 0
 
     if options.task_command in {"enable", "disable"}:
@@ -307,7 +337,7 @@ def _task_command(paths: RuntimePaths, options: argparse.Namespace) -> int:
             )
         else:
             lifecycle = "Enabled" if enabled else "Disabled"
-            print(f"{lifecycle} Task {task.id}: {task.name}")
+            _safe_print(f"{lifecycle} Task {task.id}: {task.name}")
         return 0
 
     if options.task_command == "remove":
@@ -316,7 +346,7 @@ def _task_command(paths: RuntimePaths, options: argparse.Namespace) -> int:
         if as_json:
             _print_json({"status": "removed", "task_id": task.id})
         else:
-            print(f"Removed Task {task.id}: {task.name}")
+            _safe_print(f"Removed Task {task.id}: {task.name}")
         return 0
 
     raise TaskError("unknown task command")
@@ -329,41 +359,87 @@ def _show_task(task: Task, as_json: bool) -> int:
     source = task.source_type
     if task.source_ref is not None:
         source = f"{source} ({task.source_ref})"
-    print(f"Task {task.id}: {task.name}")
-    print(f"Status: {task.human_availability}")
-    print(f"Schedule: {task.schedule.human_description()} {task.timezone_name}")
-    print(f"Next due: {task.next_run_at}")
-    print(f"Action: {task.action_mode} via {task.handler}")
-    print(f"Description: {task.description}")
-    print(f"Source: {source}")
-    print(f"Source summary: {task.source_summary}")
-    print("Policy:")
+    _safe_print(f"Task {task.id}: {task.name}")
+    _safe_print(f"Status: {task.human_availability}")
+    _safe_print(f"Schedule: {task.schedule.human_description()} {task.timezone_name}")
+    _safe_print(f"Next due: {task.next_run_at}")
+    _safe_print(f"Action: {task.action_mode} via {task.handler}")
+    _safe_print(f"Description: {task.description}")
+    _safe_print(f"Source: {source}")
+    _safe_print(f"Source summary: {task.source_summary}")
+    _safe_print("Policy:")
     for line in json.dumps(task.policy, indent=2, sort_keys=True).splitlines():
-        print(f"  {line}")
-    print(f"Created: {task.created_at}")
-    print(f"Updated: {task.updated_at}")
+        _safe_print(f"  {line}")
+    _safe_print(f"Created: {task.created_at}")
+    _safe_print(f"Updated: {task.updated_at}")
     if task.removed_at is not None:
-        print(f"Removed: {task.removed_at}")
+        _safe_print(f"Removed: {task.removed_at}")
     return 0
+
+
+def _run_task(
+    paths: RuntimePaths,
+    task_id: str,
+    as_json: bool,
+    secret_settings: Mapping[str, str],
+) -> int:
+    adapter = build_external_adapter(secret_settings, _ACTIVE_REDACTOR)
+    handler_registry = build_handler_registry(secret_settings, _ACTIVE_REDACTOR)
+    run = execute_manual_run(
+        paths.database_file,
+        task_id,
+        adapter,
+        handler_registry,
+        _ACTIVE_REDACTOR,
+    )
+    if as_json:
+        _print_json({"run": run.as_dict(), "status": run.status})
+    else:
+        _print_run(run)
+    return EXIT_EXECUTION_ERROR if run.status == "failed" else 0
+
+
+def _history(paths: RuntimePaths, task_id: str | None, as_json: bool) -> int:
+    runs = list_runs(paths.database_file, task_id=task_id)
+    if as_json:
+        _print_json({"runs": [run.as_dict() for run in runs], "status": "ok"})
+    elif not runs:
+        _safe_print("No Runs recorded.")
+    else:
+        for run in runs:
+            _print_run(run)
+    return 0
+
+
+def _print_run(run: Run) -> None:
+    _safe_print(
+        f"{run.id}  {run.task_name}  [{run.status}]  "
+        f"{run.trigger}  {run.summary}"
+    )
 
 
 def _search(paths: RuntimePaths, query: str, as_json: bool) -> int:
     tasks = search_tasks(paths.database_file, query)
+    runs = search_runs(paths.database_file, query)
+    results = [
+        *({"task": task.as_dict(), "type": "task"} for task in tasks),
+        *({"run": run.as_dict(), "type": "run"} for run in runs),
+    ]
     if as_json:
-        _print_json(
-            {
-                "query": query,
-                "results": [
-                    {"task": task.as_dict(), "type": "task"} for task in tasks
-                ],
-                "status": "ok",
-            }
-        )
-    elif not tasks:
-        print("No matching Tasks.")
+        _print_json({"query": query, "results": results, "status": "ok"})
+    elif not results:
+        _safe_print("No matching Tasks or Runs.")
     else:
-        for task in tasks:
-            print(f"task  {task.id}  {task.name}")
+        for result in results:
+            if result["type"] == "task":
+                task_payload = cast(dict[str, object], result["task"])
+                _safe_print(f"task  {task_payload['id']}  {task_payload['name']}")
+            else:
+                run_payload = cast(dict[str, object], result["run"])
+                _safe_print(
+                    f"run  {run_payload['id']}  {run_payload['task_name']}  "
+                    f"[{run_payload['status']}]"
+                )
     return 0
 
 
@@ -380,7 +456,7 @@ def _report_task_conflict(error: TaskConflictError, as_json: bool) -> int:
             }
         )
     else:
-        print(message, file=sys.stderr)
+        _safe_print(message, error=True)
     return EXIT_VALIDATION_ERROR
 
 
@@ -389,12 +465,16 @@ def _report_error(message: str, as_json: bool) -> int:
     if as_json:
         _print_json({"error": safe_message, "status": "error"})
     else:
-        print(safe_message, file=sys.stderr)
+        _safe_print(safe_message, error=True)
     return EXIT_VALIDATION_ERROR
 
 
+def _safe_print(message: str, *, error: bool = False) -> None:
+    print(_ACTIVE_REDACTOR.text(message), file=sys.stderr if error else sys.stdout)
+
+
 def _print_json(payload: dict[str, Any]) -> None:
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(json.dumps(_ACTIVE_REDACTOR.value(payload), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

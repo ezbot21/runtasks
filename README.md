@@ -1,6 +1,6 @@
 # RunTasks
 
-RunTasks is a portable Python application for durable, reviewed operational tasks. It provides an isolated runtime home, a versioned SQLite Task registry, validated lifecycle commands, and FTS5-backed Task search.
+RunTasks is a portable Python application for durable, reviewed operational tasks. It provides an isolated runtime home, a versioned SQLite Task and Run registry, validated lifecycle commands, bounded named-handler execution, searchable history, and FTS5-backed search.
 
 ## Requirements
 
@@ -51,6 +51,9 @@ bin/runtasks task update <task-id> --json '{"description":"Reviewed policy"}'
 bin/runtasks task disable <task-id>
 bin/runtasks task enable <task-id>
 bin/runtasks task remove <task-id>
+bin/runtasks run <task-id>
+bin/runtasks history
+bin/runtasks history <task-id>
 bin/runtasks search "OAuth safety"
 ```
 
@@ -85,14 +88,49 @@ registration never interprets policy prose as a command.
 
 Task updates are partial replacements of the supplied fields and preserve the Task
 ID and creation timestamp. Disabled Tasks remain visible and are explicitly marked
-unavailable for scheduled execution. Removal creates an internal tombstone: the Task
-leaves Task lists and search results and cannot be enabled or updated, but `task show`
+unavailable for scheduled execution. Manual runs remain an explicit user action and
+may still be requested for a disabled Task. Removal creates an internal tombstone: the
+Task leaves Task lists and search results and cannot be enabled or updated, but `task show`
 continues to expose it by ID with an explicit `removed` status. Its stable database
 row remains available as a foreign-key anchor, so retained user-visible history can
 still resolve its Task instead of becoming orphaned. Its former identity and policy
 fingerprints are released, allowing a later fresh registration. Identity-equivalent
 and policy-equivalent adds return a nonzero,
 update-oriented duplicate outcome rather than inserting another Task.
+
+## Named execution and Run history
+
+`runtasks run <task-id>` creates a Run with a `manual` trigger, validates its
+lifecycle transitions, and invokes only the Task's registered named handler. Policy
+text is data: it is never compiled into a shell command or forwarded to an external
+process. Unsupported handler names and executable or secret-bearing policy fields are
+rejected when the Task is registered.
+
+The current execution modes are deliberately bounded:
+
+- `notify` through `manual_notification` records `manual-action-due` without calling
+  an external adapter or mutating an external system.
+- `check` (and the read-only check phase of `approved-procedure`) through
+  `pi_mcp_adapter` issues only the named `pi_mcp_adapter.inspect` adapter operation.
+  The production Pi release-inspection adapter is implemented in a later feature; until
+  configured, the local adapter returns a structured failure without executing a command.
+
+Handlers and external adapters exchange structured requests and outcomes. Successful,
+failed, and manual-action-due Runs retain Task identity, timestamps, a redacted summary,
+structured redacted details, and an optional redacted external log reference. Execution
+failures return exit status 1 while still recording inspectable history; validation
+failures return exit status 2.
+
+Use `runtasks history` for all Runs or `runtasks history <task-id>` for one Task.
+Both commands support `--json`. FTS5 search returns matching Tasks and matching Run
+summaries/details together, so validation evidence is available through the same public
+`search` command.
+
+Credential redaction is centralized across CLI output and stored execution outcomes.
+It covers configured `RUNTASKS_*` secret values and common bearer-token, API-key,
+credentialed-URL, private-key, GitHub, AWS, Slack, Telegram, and JWT shapes. RunTasks
+stores only the redacted structured outcome; larger logs remain external and are
+represented by an optional redacted reference.
 
 Initialization creates:
 

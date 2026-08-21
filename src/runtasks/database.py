@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any, Iterator
 
 
-LATEST_SCHEMA_VERSION = 2
+LATEST_SCHEMA_VERSION = 3
 BUSY_TIMEOUT_MS = 5_000
 
 
@@ -95,6 +95,9 @@ def _apply_migrations(connection: sqlite3.Connection) -> bool:
         if current_version < 2:
             _create_task_registry(connection)
             _record_migration(connection, 2)
+        if current_version < 3:
+            _create_run_history(connection)
+            _record_migration(connection, 3)
         connection.commit()
     except Exception:
         connection.rollback()
@@ -173,6 +176,74 @@ def _create_task_registry(connection: sqlite3.Connection) -> None:
         """
         CREATE TRIGGER tasks_fts_delete AFTER DELETE ON tasks BEGIN
             DELETE FROM task_fts WHERE task_id = old.id;
+        END
+        """
+    )
+
+
+def _create_run_history(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id),
+            task_name TEXT NOT NULL,
+            trigger TEXT NOT NULL CHECK (
+                trigger IN ('manual', 'scheduled', 'approval')
+            ),
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'claimed', 'running', 'success', 'no-change',
+                    'non-important', 'decision-required', 'failed',
+                    'rolled-back', 'manual-action-due'
+                )
+            ),
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            summary TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            external_log_ref TEXT
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX runs_task_history_idx ON runs(task_id, created_at DESC)"
+    )
+    connection.execute(
+        "CREATE INDEX runs_status_idx ON runs(status, created_at DESC)"
+    )
+    connection.execute(
+        """
+        CREATE VIRTUAL TABLE run_fts USING fts5(
+            run_id UNINDEXED,
+            task_name,
+            summary,
+            details
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER runs_fts_insert AFTER INSERT ON runs BEGIN
+            INSERT INTO run_fts(run_id, task_name, summary, details)
+            VALUES (new.id, new.task_name, new.summary, new.details_json);
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER runs_fts_update AFTER UPDATE ON runs BEGIN
+            DELETE FROM run_fts WHERE run_id = old.id;
+            INSERT INTO run_fts(run_id, task_name, summary, details)
+            VALUES (new.id, new.task_name, new.summary, new.details_json);
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER runs_fts_delete AFTER DELETE ON runs BEGIN
+            DELETE FROM run_fts WHERE run_id = old.id;
         END
         """
     )

@@ -266,7 +266,7 @@ class RunTasksCliTests(unittest.TestCase):
                         "fts5": True,
                         "journal_mode": "wal",
                         "path": str(home / "var" / "data" / "runtasks.sqlite3"),
-                        "schema_version": 2,
+                        "schema_version": 3,
                     },
                     "home": str(home),
                     "initialized": True,
@@ -301,9 +301,52 @@ class RunTasksCliTests(unittest.TestCase):
 
             self.assertEqual(initialization.returncode, 0, initialization.stderr)
             self.assertEqual(status.returncode, 0, status.stderr)
-            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 2)
+            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 3)
             self.assertEqual(tasks.returncode, 0, tasks.stderr)
             self.assertEqual(json.loads(tasks.stdout)["tasks"], [])
+
+    def test_init_migrates_schema_two_without_losing_registered_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "runtime-home"
+            self.assertEqual(self.run_cli(home, "init").returncode, 0)
+            task_payload = {
+                "name": "Manual maintenance reminder",
+                "description": "Review maintenance state manually.",
+                "source_type": "direct",
+                "source_ref": None,
+                "source_summary": "A retained schema-two Task.",
+                "schedule": {"type": "daily", "time": "09:00"},
+                "timezone": "Asia/Singapore",
+                "next_run_at": "2026-09-01T01:00:00Z",
+                "action_mode": "notify",
+                "handler": "manual_notification",
+                "policy": {"message": "Review maintenance state."},
+            }
+            added = self.run_cli(
+                home,
+                "--json",
+                "task",
+                "add",
+                "--json",
+                json.dumps(task_payload),
+            )
+            self.assertEqual(added.returncode, 0, added.stderr)
+            task = json.loads(added.stdout)["task"]
+            database_file = home / "var" / "data" / "runtasks.sqlite3"
+            with sqlite3.connect(database_file) as connection:
+                connection.execute("DROP TABLE runs")
+                connection.execute("DROP TABLE run_fts")
+                connection.execute("DELETE FROM schema_migrations WHERE version = 3")
+
+            migrated = self.run_cli(home, "init")
+            status = self.run_cli(home, "--json", "status")
+            shown = self.run_cli(home, "--json", "task", "show", task["id"])
+            history = self.run_cli(home, "--json", "history", task["id"])
+
+            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 3)
+            self.assertEqual(json.loads(shown.stdout)["task"], task)
+            self.assertEqual(json.loads(history.stdout)["runs"], [])
 
 
 if __name__ == "__main__":

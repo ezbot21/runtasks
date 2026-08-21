@@ -14,14 +14,11 @@ import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from runtasks.database import LATEST_SCHEMA_VERSION, database_connection
+from runtasks.handler_contracts import HANDLER_ACTION_MODES
 
 
 SOURCE_TYPES = frozenset({"session", "document", "direct", "existing-task"})
 ACTION_MODES = frozenset({"check", "notify", "approved-procedure"})
-HANDLER_ACTION_MODES: Mapping[str, frozenset[str]] = {
-    "manual_notification": frozenset({"notify"}),
-    "pi_mcp_adapter": frozenset({"check", "approved-procedure"}),
-}
 TASK_FIELDS = frozenset(
     {
         "name",
