@@ -228,9 +228,54 @@ Copy `config/runtasks.example.toml` when preparing configuration manually. Timez
 
 Secrets are loaded separately from non-secret TOML settings. RunTasks reads `<RUNTASKS_HOME>/.env` first, then lets `RUNTASKS_*` process environment variables override matching values. `.env.example` is the committed placeholder for future integration-specific names. Bootstrap commands do not require Telegram or any other live integration. RunTasks does not print secret values, and `.env` files are ignored by Git.
 
+## Telegram notifications
+
+RunTasks integrates directly with Telegram through the exactly pinned and reviewed `python-telegram-bot==22.8` release. It uses Bot API `getUpdates` long polling, never a webhook, so it does not open a public inbound port or require a domain, TLS certificate, or reverse proxy.
+
+The initial operating model is a private one-to-one chat with the bot:
+
+1. Create a bot through Telegram's official `@BotFather` account and copy `.env.example` to `~/runtasks/.env`.
+2. Put only the bot token in `.env`, then protect the file:
+
+   ```bash
+   chmod 600 ~/runtasks/.env
+   ```
+
+3. Start setup, then send `/start` when the command says it is ready. Setup discards older pending updates so stale chats cannot be mistaken for the current operator:
+
+   ```bash
+   bin/runtasks telegram setup
+   bin/runtasks --json telegram setup
+   ```
+
+   The readiness prompt is written to stderr so JSON on stdout remains machine-readable.
+
+4. Set `RUNTASKS_TELEGRAM_ALLOWED_USER_IDS` and `RUNTASKS_TELEGRAM_NOTIFICATION_CHAT_ID` to the numeric values shown. Authorization never relies on a username. A positive private-DM chat ID is recommended. For a negative group ID, Telegram must verify that an allowed user is an administrator; `RUNTASKS_TELEGRAM_THREAD_ID` may then select a forum topic in a verified supergroup.
+5. Run `telegram setup` again and send a fresh `/start`. With authorization configured, human output reports `Authorization: verified` or `Authorization: mismatch`; JSON includes the separate numeric-user and chat checks.
+6. Send a harmless redacted notification and check the exit status:
+
+   ```bash
+   bin/runtasks telegram test
+   bin/runtasks --json telegram test
+   ```
+
+7. Run the long-poll listener. It reports authorized `/start` checks only to the local console and does not send a Telegram response; Telegram Decision callbacks are outside this ticket:
+
+   ```bash
+   bin/runtasks telegram listen
+   ```
+
+Setup and listening refuse to poll while a webhook is configured. A token-keyed global lock file under the user's default `~/runtasks/var/data/` directory prevents a second runtime home from polling the same bot concurrently; other runtime files remain under the configured `RUNTASKS_HOME`. The long-running listener intentionally uses human output only; `--json` is rejected rather than emitting multiple JSON documents over its lifetime.
+
+### Telegram security
+
+Telegram bot chats are **not end-to-end encrypted**. Never send tokens, credentials, environment files, private keys, or unredacted logs through the bot. RunTasks redacts configured private values and sensitive URL components from outbound notifications and reports integration failures without echoing Telegram responses.
+
+Use only numeric user and chat IDs for authorization, keep the bot in a private DM for the initial deployment, and enable two-factor authentication on the operator's Telegram account. If the BotFather token appears in a terminal capture, log, chat, issue, or commit, rotate it immediately through `@BotFather`, update `~/runtasks/.env`, and restart the listener. Telegram credentials and IDs are loaded from private configuration and are never stored in SQLite.
+
 ## Testing safely
 
-Behavior tests execute `bin/runtasks` in subprocesses with a temporary `RUNTASKS_HOME`. They do not initialize or inspect the operator's real RunTasks home:
+Behavior tests execute `bin/runtasks` in subprocesses with a temporary `RUNTASKS_HOME`. Telegram tests use recorded Bot API update fixtures and fake notification clients; they never contact Telegram or inspect the operator's real home:
 
 ```bash
 python -m unittest discover -s tests -v

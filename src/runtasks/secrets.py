@@ -10,6 +10,10 @@ from runtasks.paths import RuntimePaths
 
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_PRIVATE_ENVIRONMENT_NAME = re.compile(
+    r"(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|API_KEY|PRIVATE_KEY)",
+    re.IGNORECASE,
+)
 
 
 class SecretConfigurationError(ValueError):
@@ -26,10 +30,20 @@ def load_secret_settings(
         {
             name: value
             for name, value in process_environment.items()
-            if name.startswith("RUNTASKS_") and name != "RUNTASKS_HOME"
+            if _is_private_environment_name(name)
         }
     )
     return MappingProxyType(values)
+
+
+def _is_private_environment_name(name: str) -> bool:
+    return (
+        name != "RUNTASKS_HOME"
+        and (
+            name.startswith("RUNTASKS_")
+            or _PRIVATE_ENVIRONMENT_NAME.search(name) is not None
+        )
+    )
 
 
 def _load_secret_environment_file(path: Path) -> dict[str, str]:

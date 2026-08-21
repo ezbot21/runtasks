@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import sqlite3
 import stat
@@ -9,9 +8,7 @@ import subprocess
 import tempfile
 import unittest
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CLI = PROJECT_ROOT / "bin" / "runtasks"
+from tests.cli_test_support import run_cli as run_cli_process
 
 
 class RunTasksCliTests(unittest.TestCase):
@@ -21,23 +18,10 @@ class RunTasksCliTests(unittest.TestCase):
         *arguments: str,
         extra_environment: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        environment = {
-            key: value
-            for key, value in os.environ.items()
-            if not key.startswith("RUNTASKS_")
-        }
-        if home is not None:
-            environment["RUNTASKS_HOME"] = str(home)
-        if extra_environment:
-            environment.update(extra_environment)
-
-        return subprocess.run(
-            [str(CLI), *arguments],
-            cwd=PROJECT_ROOT,
-            env=environment,
-            text=True,
-            capture_output=True,
-            check=False,
+        return run_cli_process(
+            home,
+            *arguments,
+            extra_environment=extra_environment,
         )
 
     def test_status_reports_an_uninitialized_temporary_home_as_json(self) -> None:

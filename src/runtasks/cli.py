@@ -29,6 +29,10 @@ from runtasks.decisions import (
     search_decisions,
 )
 from runtasks.handlers import build_handler_registry
+from runtasks.notifications import (
+    NotificationDeliveryError,
+    NotificationDestinationError,
+)
 from runtasks.paths import RuntimePaths
 from runtasks.redaction import DEFAULT_REDACTOR, Redactor
 from runtasks.runs import Run, RunError, execute_manual_run, list_runs, search_runs
@@ -54,6 +58,12 @@ from runtasks.tasks import (
     set_task_enabled,
     update_task,
 )
+from runtasks.telegram import (
+    PollerAlreadyRunningError,
+    TelegramConfigurationError,
+    TelegramDeliveryError,
+)
+from runtasks.telegram_cli import add_telegram_parser, run_telegram_command
 
 
 EXIT_EXECUTION_ERROR = 1
@@ -178,6 +188,8 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("query")
     _add_output_json_flag(search_parser)
 
+    add_telegram_parser(subparsers)
+
     return parser
 
 
@@ -233,8 +245,19 @@ def main(arguments: Sequence[str] | None = None) -> int:
             return _decision_command(paths, options)
         if options.command == "search":
             return _search(paths, options.query, options.as_json)
+        if options.command == "telegram":
+            return run_telegram_command(paths, secret_settings, options)
     except TaskConflictError as error:
         return _report_task_conflict(error, getattr(options, "as_json", False))
+    except (
+        NotificationDeliveryError,
+        TelegramDeliveryError,
+        PollerAlreadyRunningError,
+    ):
+        return _report_execution_error(
+            "Telegram operation failed",
+            getattr(options, "as_json", False),
+        )
     except (
         ConfigurationError,
         DatabaseError,
@@ -244,6 +267,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         RunError,
         SchedulerValidationError,
         TaskError,
+        NotificationDestinationError,
+        TelegramConfigurationError,
     ) as error:
         return _report_error(str(error), getattr(options, "as_json", False))
     except (OSError, RuntimeError, ValueError):
@@ -272,6 +297,7 @@ def _json_output_requested(arguments: Sequence[str]) -> bool:
         "run-due",
         "search",
         "status",
+        "telegram",
     }:
         return "--json" in arguments[1:]
     if command != "task" or len(arguments) < 2:
@@ -646,6 +672,15 @@ def _report_task_conflict(error: TaskConflictError, as_json: bool) -> int:
     else:
         _safe_print(message, error=True)
     return EXIT_VALIDATION_ERROR
+
+
+def _report_execution_error(message: str, as_json: bool) -> int:
+    safe_message = f"RunTasks execution failed: {message}"
+    if as_json:
+        _print_json({"error": safe_message, "status": "error"})
+    else:
+        _safe_print(safe_message, error=True)
+    return EXIT_EXECUTION_ERROR
 
 
 def _report_error(message: str, as_json: bool) -> int:

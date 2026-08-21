@@ -1,0 +1,58 @@
+[
+  {
+    "update_id": 9100,
+    "message": {
+      "message_id": 15,
+      "date": 1787302800,
+      "chat": {
+        "id": 998877665,
+        "type": "private",
+        "first_name": "Operator"
+      },
+      "from": {
+        "id": 998877665,
+        "is_bot": false,
+        "first_name": "Operator",
+        "username": "not-used-for-authorization"
+      },
+      "text": "hello"
+    }
+  },
+  {
+    "update_id": 9101,
+    "message": {
+      "message_id": 16,
+      "date": 1787302801,
+      "chat": {
+        "id": 998877665,
+        "type": "private",
+        "first_name": "Operator"
+      },
+      "from": {
+        "id": 998877665,
+        "is_bot": false,
+        "first_name": "Operator",
+        "username": "not-used-for-authorization"
+      },
+      "text": "/start"
+    }
+  },
+  {
+    "update_id": 9102,
+    "message": {
+      "message_id": 17,
+      "date": 1787302802,
+      "chat": {
+        "id": -1002233445566,
+        "type": "supergroup",
+        "title": "Operations"
+      },
+      "from": {
+        "id": 112233445,
+        "is_bot": false,
+        "first_name": "Second operator"
+      },
+      "text": "/start@runtasks_bot"
+    }
+  }
+]
