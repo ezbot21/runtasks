@@ -1,0 +1,239 @@
+[
+  {
+    "name": "current conversation",
+    "source": "Use what we just agreed: review adapter releases every 14 days and escalate security or OAuth changes.",
+    "now": "2026-08-31T03:00:00Z",
+    "missing_routine_details": ["time", "timezone"],
+    "risk_categories": [],
+    "proposals": [
+      {
+        "operation": "add",
+        "task_id": null,
+        "task": {
+          "name": "Conversation adapter release review",
+          "description": "Review adapter releases agreed in the current conversation.",
+          "source_type": "session",
+          "source_ref": null,
+          "source_summary": "Current conversation: review adapter releases every 14 days and escalate security or OAuth changes.",
+          "schedule": {"type": "interval-days", "days": 14, "time": "09:00"},
+          "timezone": "Asia/Singapore",
+          "next_run_at": "2026-09-01T01:00:00Z",
+          "action_mode": "approved-procedure",
+          "handler": "pi_mcp_adapter",
+          "policy": {
+            "automatic_behavior": ["Inspect installed and stable adapter release information."],
+            "important_conditions": ["Security or OAuth safety changes affect the installation."],
+            "notification_conditions": ["The result is important, uncertain, or failed."],
+            "approval_requirements": ["Any adapter update requires a separate explicit approval."],
+            "execution": ["Use the reviewed pi_mcp_adapter named handler."],
+            "validation": ["Require the handler's adapter and service validation to pass."],
+            "rollback": ["Restore the exact prior version after failed validation."],
+            "assumptions": ["The default time is 09:00 and the default timezone is Asia/Singapore."]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "document",
+    "source": "Review backup health every week. Investigate missing, stale, or failed backups manually; do not run unsupported backup commands.",
+    "source_ref": "policies/backup-review.md",
+    "now": "2026-08-31T03:00:00Z",
+    "missing_routine_details": ["time", "timezone"],
+    "risk_categories": [],
+    "proposals": [
+      {
+        "operation": "add",
+        "task_id": null,
+        "task": {
+          "name": "Weekly backup review",
+          "description": "Remind the operator to review backup health from the supplied policy document.",
+          "source_type": "document",
+          "source_ref": "policies/backup-review.md",
+          "source_summary": "Backup policy document: review backup health weekly and investigate failures manually.",
+          "schedule": {"type": "interval-days", "days": 7, "time": "09:00"},
+          "timezone": "Asia/Singapore",
+          "next_run_at": "2026-09-01T01:00:00Z",
+          "action_mode": "notify",
+          "handler": "manual_notification",
+          "policy": {
+            "automatic_behavior": ["Record that the manual backup review is due."],
+            "important_conditions": ["A backup is missing, stale, or failed."],
+            "notification_conditions": ["Notify whenever the scheduled manual review is due."],
+            "approval_requirements": ["No external mutation is authorized by this Task."],
+            "execution": ["The operator reviews backup status manually."],
+            "validation": ["The operator confirms recent restorable backups exist."],
+            "rollback": ["No automated change is made, so rollback is not applicable."],
+            "assumptions": ["The default time is 09:00 and the default timezone is Asia/Singapore.", "Unsupported backup commands are represented as a manual notification."]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "pasted or selected text",
+    "source": "Every morning, inspect the dashboard. Escalate failures. Do not make changes.",
+    "now": "2026-08-31T03:00:00Z",
+    "missing_routine_details": ["time", "timezone"],
+    "risk_categories": [],
+    "proposals": [
+      {
+        "operation": "add",
+        "task_id": null,
+        "task": {
+          "name": "Daily dashboard review",
+          "description": "Remind the operator to inspect the dashboard from pasted policy text.",
+          "source_type": "direct",
+          "source_ref": null,
+          "source_summary": "Pasted text: inspect the dashboard every morning, escalate failures, and make no changes.",
+          "schedule": {"type": "daily", "time": "09:00"},
+          "timezone": "Asia/Singapore",
+          "next_run_at": "2026-09-01T01:00:00Z",
+          "action_mode": "notify",
+          "handler": "manual_notification",
+          "policy": {
+            "automatic_behavior": ["Record that the dashboard review is due."],
+            "important_conditions": ["The dashboard reports a failure."],
+            "notification_conditions": ["Notify whenever the manual review is due."],
+            "approval_requirements": ["No dashboard change is authorized."],
+            "execution": ["The operator inspects the dashboard manually."],
+            "validation": ["The operator records whether the dashboard is healthy."],
+            "rollback": ["No automated change is made, so rollback is not applicable."],
+            "assumptions": ["Morning means the default time 09:00, and the default timezone is Asia/Singapore."]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "direct instruction",
+    "source": "Every 30 days remind me to rotate staging credentials, delete revoked credential records, purchase replacement credentials if needed, and publish completion, but never do any of that automatically.",
+    "now": "2026-08-31T03:00:00Z",
+    "missing_routine_details": ["time", "timezone"],
+    "risk_categories": ["credential-related", "destructive", "costly", "externally visible"],
+    "proposals": [
+      {
+        "operation": "add",
+        "task_id": null,
+        "task": {
+          "name": "Staging credential rotation reminder",
+          "description": "Remind the operator that reviewed staging credential maintenance is due.",
+          "source_type": "direct",
+          "source_ref": null,
+          "source_summary": "Direct instruction: every 30 days remind the operator to perform credential-related, destructive, costly, and externally visible maintenance manually.",
+          "schedule": {"type": "interval-days", "days": 30, "time": "09:00"},
+          "timezone": "Asia/Singapore",
+          "next_run_at": "2026-09-01T01:00:00Z",
+          "action_mode": "notify",
+          "handler": "manual_notification",
+          "policy": {
+            "automatic_behavior": ["Record that manual credential rotation is due."],
+            "important_conditions": ["The scheduled credential rotation date has arrived."],
+            "notification_conditions": ["Notify whenever rotation is due."],
+            "approval_requirements": ["Credential-related, destructive, costly, and externally visible actions require direct operator approval and are never inferred."],
+            "execution": ["The operator uses separately approved procedures for credential rotation, record deletion, purchases, and publication."],
+            "validation": ["The operator validates replacement credentials and reviews every external effect before completion."],
+            "rollback": ["The operator retains a tested recovery path and restores deleted records where the approved procedure supports it."],
+            "assumptions": ["The default time is 09:00 and the default timezone is Asia/Singapore."]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "existing Task update",
+    "source": "Change tsk_existing0000000000000000 from monthly to every 14 days.",
+    "now": "2026-08-31T03:00:00Z",
+    "missing_routine_details": [],
+    "risk_categories": [],
+    "proposals": [
+      {
+        "operation": "update",
+        "task_id": "tsk_existing0000000000000000",
+        "task": {
+          "name": "Existing release review",
+          "description": "Review releases on the newly accepted 14-day cadence.",
+          "source_type": "existing-task",
+          "source_ref": "tsk_existing0000000000000000",
+          "source_summary": "Existing Task update: change the accepted release-review cadence from monthly to every 14 days.",
+          "schedule": {"type": "interval-days", "days": 14, "time": "09:00"},
+          "timezone": "Asia/Singapore",
+          "next_run_at": "2026-09-01T01:00:00Z",
+          "action_mode": "notify",
+          "handler": "manual_notification",
+          "policy": {
+            "automatic_behavior": ["Record that the manual release review is due."],
+            "important_conditions": ["A release affects security or compatibility."],
+            "notification_conditions": ["Notify whenever the manual review is due."],
+            "approval_requirements": ["No release installation is authorized."],
+            "execution": ["The operator reviews releases manually."],
+            "validation": ["The operator records the review result."],
+            "rollback": ["No automated change is made, so rollback is not applicable."],
+            "assumptions": ["Unchanged Task fields were copied from the inspected existing Task."]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "multiple independent Tasks",
+    "source": "Review backups daily at 09:00. Separately, review access logs every 7 days at 10:00.",
+    "now": "2026-08-31T03:00:00Z",
+    "missing_routine_details": ["timezone"],
+    "risk_categories": [],
+    "proposals": [
+      {
+        "operation": "add",
+        "task_id": null,
+        "task": {
+          "name": "Daily backup review",
+          "description": "Remind the operator to review backup health daily.",
+          "source_type": "direct",
+          "source_ref": null,
+          "source_summary": "Direct instruction, task 1 of 2: review backup health daily at 09:00.",
+          "schedule": {"type": "daily", "time": "09:00"},
+          "timezone": "Asia/Singapore",
+          "next_run_at": "2026-09-01T01:00:00Z",
+          "action_mode": "notify",
+          "handler": "manual_notification",
+          "policy": {
+            "automatic_behavior": ["Record that the manual backup review is due."],
+            "important_conditions": ["A backup is missing, stale, or failed."],
+            "notification_conditions": ["Notify whenever the manual review is due."],
+            "approval_requirements": ["No external mutation is authorized."],
+            "execution": ["The operator reviews backups manually."],
+            "validation": ["The operator confirms recent backups exist."],
+            "rollback": ["No automated change is made, so rollback is not applicable."],
+            "assumptions": ["The supplied 09:00 time uses the default timezone Asia/Singapore."]
+          }
+        }
+      },
+      {
+        "operation": "add",
+        "task_id": null,
+        "task": {
+          "name": "Weekly access-log review",
+          "description": "Remind the operator to review access logs every seven days.",
+          "source_type": "direct",
+          "source_ref": null,
+          "source_summary": "Direct instruction, task 2 of 2: review access logs every 7 days at 10:00.",
+          "schedule": {"type": "interval-days", "days": 7, "time": "10:00"},
+          "timezone": "Asia/Singapore",
+          "next_run_at": "2026-09-01T02:00:00Z",
+          "action_mode": "notify",
+          "handler": "manual_notification",
+          "policy": {
+            "automatic_behavior": ["Record that the manual access-log review is due."],
+            "important_conditions": ["The logs contain suspicious access."],
+            "notification_conditions": ["Notify whenever the manual review is due."],
+            "approval_requirements": ["No account or access change is authorized."],
+            "execution": ["The operator reviews access logs manually."],
+            "validation": ["The operator records whether suspicious access was found."],
+            "rollback": ["No automated change is made, so rollback is not applicable."],
+            "assumptions": ["The supplied 10:00 time uses the default timezone Asia/Singapore."]
+          }
+        }
+      }
+    ]
+  }
+]

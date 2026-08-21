@@ -19,6 +19,12 @@ uv run mypy
 
 All project, runtime, and development dependencies are exactly resolved in `uv.lock`. The pinned `tzdata` runtime dependency keeps IANA timezone validation portable on systems without an operating-system timezone database.
 
+## Agent Skill
+
+The canonical standards-compatible Agent Skill is available directly from the repository at [`skills/runtasks/SKILL.md`](skills/runtasks/SKILL.md). It extracts one or more Task proposals from conversation context, documents, pasted text, direct instructions, or existing Tasks. Each proposal is staged as a hash-checked review and shows its full policy and assumptions before asking for `YES`, `NO`, or `EDIT`; only an explicit `YES` can invoke `task add` or `task update` with the exact reviewed payload.
+
+Global cross-agent discovery installation is intentionally handled by a later feature. Until then, load or invoke the canonical skill from this repository in any Agent Skills-compatible harness.
+
 ## Runtime home
 
 RunTasks resolves its runtime home in this order:
