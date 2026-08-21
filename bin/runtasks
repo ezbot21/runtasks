@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+set -eu
+
+PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "RunTasks requires uv 0.12.5; install uv and run 'uv sync --locked'." >&2
+    exit 127
+fi
+
+exec uv run --project "$PROJECT_ROOT" --locked runtasks "$@"

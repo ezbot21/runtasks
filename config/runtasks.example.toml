@@ -1,0 +1,3 @@
+# Non-secret RunTasks configuration.
+timezone = "Asia/Singapore"
+daily_run_time = "09:00"

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "runtasks"
+version = "0.1.0"
+description = "A portable, durable scheduler for reviewed operational tasks"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "RunTasks contributors" }]
+dependencies = ["tzdata==2026.3"]
+
+[project.scripts]
+runtasks = "runtasks.cli:main"
+
+[dependency-groups]
+dev = ["mypy==1.15.0"]
+
+[tool.uv]
+required-version = "==0.12.5"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/runtasks"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
