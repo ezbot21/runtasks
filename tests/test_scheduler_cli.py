@@ -133,6 +133,9 @@ class SchedulerCliTests(unittest.TestCase):
             run = payload["runs"][0]
             self.assertEqual(run["task_id"], due["id"])
             self.assertEqual(run["trigger"], "scheduled")
+            self.assertEqual(run["created_at"], "2026-09-01T01:00:00Z")
+            self.assertEqual(run["started_at"], "2026-09-01T01:00:00Z")
+            self.assertEqual(run["finished_at"], "2026-09-01T01:00:00Z")
             self.assertEqual(run["scheduled_for"], "2026-09-01T01:00:00Z")
             self.assertEqual(run["next_run_at"], "2026-09-02T01:00:00Z")
             self.assertEqual(
@@ -201,6 +204,13 @@ class SchedulerCliTests(unittest.TestCase):
                 timezone="America/New_York",
                 next_run_at="2026-03-07T14:00:00Z",
             )
+            dst_gap_task = self.add_task(
+                home,
+                name="DST gap Task",
+                schedule={"type": "daily", "time": "02:30"},
+                timezone="America/New_York",
+                next_run_at="2026-03-07T07:30:00Z",
+            )
             default_payload = {
                 "name": "Default timezone Task",
                 "description": "Use the default task timezone.",
@@ -239,9 +249,23 @@ class SchedulerCliTests(unittest.TestCase):
                 default_task["next_run_local"],
                 "2026-09-01T09:00:00+08:00[Asia/Singapore]",
             )
-            run = json.loads(executed.stdout)["runs"][0]
-            self.assertEqual(run["task_id"], new_york_task["id"])
-            self.assertEqual(run["next_run_at"], "2026-03-08T13:00:00Z")
+            runs_by_task = {
+                run["task_id"]: run for run in json.loads(executed.stdout)["runs"]
+            }
+            self.assertEqual(
+                runs_by_task[new_york_task["id"]]["next_run_at"],
+                "2026-03-08T13:00:00Z",
+            )
+            self.assertEqual(
+                runs_by_task[dst_gap_task["id"]]["next_run_at"],
+                "2026-03-09T06:30:00Z",
+            )
+            self.assertEqual(
+                runs_by_task[dst_gap_task["id"]]["details"]["scheduling"][
+                    "missed_occurrences_skipped"
+                ],
+                1,
+            )
             self.assertIn(
                 "2026-03-08T09:00:00-04:00[America/New_York]",
                 shown.stdout,

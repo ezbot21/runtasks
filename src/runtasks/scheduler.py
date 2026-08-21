@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
-from zoneinfo import ZoneInfo
-
 from runtasks.adapters import ExternalAdapter
 from runtasks.handlers import HandlerRegistry
 from runtasks.redaction import Redactor
-from runtasks.runs import Run, claim_scheduled_run, execute_scheduled_run
-from runtasks.tasks import IntervalDaysSchedule, Task, list_due_tasks
+from runtasks.runs import (
+    Run,
+    ScheduledClaim,
+    claim_scheduled_run,
+    execute_scheduled_run,
+)
+from runtasks.tasks import list_due_tasks
 
 
 class SchedulerValidationError(ValueError):
@@ -64,65 +67,34 @@ def run_due_tasks(
 ) -> SchedulerResult:
     current_datetime = _require_aware(clock.now()).astimezone(timezone.utc)
     current_time = _canonical_timestamp(current_datetime)
-    claimed: list[tuple[str, Task]] = []
+    claimed: list[ScheduledClaim] = []
 
-    for task in list_due_tasks(path, current_time):
-        next_run_at, missed_occurrences_skipped = _next_run_after(
-            task,
-            current_datetime,
-        )
-        run_id = claim_scheduled_run(
+    for due_task in list_due_tasks(path, current_time):
+        claim = claim_scheduled_run(
             path,
-            task,
+            due_task.id,
             claimed_at=current_time,
-            next_run_at=next_run_at,
-            missed_occurrences_skipped=missed_occurrences_skipped,
         )
-        if run_id is not None:
-            claimed.append((run_id, task))
+        if claim is not None:
+            claimed.append(claim)
 
     runs = tuple(
         execute_scheduled_run(
             path,
-            run_id,
-            task,
+            claim.run_id,
+            claim.task,
             external_adapter,
             handler_registry,
             redactor,
+            lambda: _clock_timestamp(clock),
         )
-        for run_id, task in claimed
+        for claim in claimed
     )
     return SchedulerResult(current_time=current_time, runs=runs)
 
 
-def _next_run_after(task: Task, current_time: datetime) -> tuple[str, int]:
-    task_timezone = ZoneInfo(task.timezone_name)
-    scheduled_at = datetime.fromisoformat(
-        task.next_run_at.replace("Z", "+00:00")
-    ).astimezone(task_timezone)
-    interval_days = (
-        task.schedule.days
-        if isinstance(task.schedule, IntervalDaysSchedule)
-        else 1
-    )
-    schedule_hour, schedule_minute = (
-        int(part) for part in task.schedule.time.split(":")
-    )
-    schedule_time = time(hour=schedule_hour, minute=schedule_minute)
-    next_date = scheduled_at.date()
-    missed_occurrences_skipped = 0
-
-    while True:
-        next_date = _add_days(next_date, interval_days)
-        next_local = datetime.combine(next_date, schedule_time, tzinfo=task_timezone)
-        next_utc = next_local.astimezone(timezone.utc)
-        if next_utc > current_time:
-            return _canonical_timestamp(next_utc), missed_occurrences_skipped
-        missed_occurrences_skipped += 1
-
-
-def _add_days(value: date, days: int) -> date:
-    return value + timedelta(days=days)
+def _clock_timestamp(clock: Clock) -> str:
+    return _canonical_timestamp(_require_aware(clock.now()))
 
 
 def _require_aware(value: datetime) -> datetime:

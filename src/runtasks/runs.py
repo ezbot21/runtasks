@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
-from typing import Iterator, Mapping, cast
+from typing import Callable, Iterator, Mapping, cast
 import uuid
 
 from runtasks.adapters import ExternalAdapter
@@ -19,7 +19,13 @@ from runtasks.handlers import (
     HandlerRegistry,
 )
 from runtasks.redaction import Redactor
-from runtasks.tasks import Task, TaskError, get_task
+from runtasks.tasks import (
+    Task,
+    TaskError,
+    _task_from_row,
+    get_task,
+    next_scheduled_occurrence,
+)
 
 
 RUN_STATUSES = frozenset(
@@ -101,6 +107,12 @@ class Run:
         }
 
 
+@dataclass(frozen=True)
+class ScheduledClaim:
+    run_id: str
+    task: Task
+
+
 def execute_manual_run(
     path: Path,
     task_id: str,
@@ -118,6 +130,7 @@ def execute_manual_run(
         external_adapter=external_adapter,
         handler_registry=handler_registry,
         redactor=redactor,
+        timestamp_factory=_utc_now,
     )
 
 
@@ -128,6 +141,7 @@ def execute_scheduled_run(
     external_adapter: ExternalAdapter,
     handler_registry: HandlerRegistry,
     redactor: Redactor,
+    timestamp_factory: Callable[[], str],
 ) -> Run:
     return _execute_claimed_run(
         path,
@@ -137,6 +151,7 @@ def execute_scheduled_run(
         external_adapter=external_adapter,
         handler_registry=handler_registry,
         redactor=redactor,
+        timestamp_factory=timestamp_factory,
     )
 
 
@@ -149,8 +164,9 @@ def _execute_claimed_run(
     external_adapter: ExternalAdapter,
     handler_registry: HandlerRegistry,
     redactor: Redactor,
+    timestamp_factory: Callable[[], str],
 ) -> Run:
-    _transition_run(path, run_id, "running", started_at=_utc_now())
+    _transition_run(path, run_id, "running", started_at=timestamp_factory())
 
     try:
         handler = handler_registry.get(task.handler)
@@ -174,7 +190,7 @@ def _execute_claimed_run(
         path,
         run_id,
         safe_outcome.status,
-        finished_at=_utc_now(),
+        finished_at=timestamp_factory(),
         summary=safe_outcome.summary,
         details=safe_outcome.details,
         external_log_ref=safe_outcome.external_log_ref,
@@ -184,38 +200,49 @@ def _execute_claimed_run(
 
 def claim_scheduled_run(
     path: Path,
-    task: Task,
+    task_id: str,
     *,
     claimed_at: str,
-    next_run_at: str,
-    missed_occurrences_skipped: int,
-) -> str | None:
+) -> ScheduledClaim | None:
     run_id = f"run_{uuid.uuid4().hex[:24]}"
-    scheduling_details: dict[str, object] = {
-        "scheduling": {
-            "missed_occurrences_skipped": missed_occurrences_skipped,
-            "next_run_at": next_run_at,
-            "scheduled_for": task.next_run_at,
-        }
-    }
+    current_time = datetime.fromisoformat(claimed_at.replace("Z", "+00:00"))
     try:
         with _run_connection(path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            cursor = connection.execute(
+            row = connection.execute(
                 """
-                UPDATE tasks SET next_run_at = ?, updated_at = ?
+                SELECT * FROM tasks
                 WHERE id = ?
                   AND enabled = 1
                   AND removed_at IS NULL
-                  AND next_run_at = ?
                   AND next_run_at <= ?
                 """,
+                (task_id, claimed_at),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                return None
+            task = _task_from_row(row)
+            occurrence = next_scheduled_occurrence(task, current_time)
+            scheduling_details: dict[str, object] = {
+                "scheduling": {
+                    "missed_occurrences_skipped": (
+                        occurrence.missed_occurrences_skipped
+                    ),
+                    "next_run_at": occurrence.next_run_at,
+                    "scheduled_for": occurrence.scheduled_for,
+                }
+            }
+            cursor = connection.execute(
+                """
+                UPDATE tasks SET next_run_at = ?, updated_at = ?
+                WHERE id = ? AND next_run_at = ?
+                """,
                 (
-                    next_run_at,
+                    occurrence.next_run_at,
                     claimed_at,
                     task.id,
-                    task.next_run_at,
-                    claimed_at,
+                    occurrence.scheduled_for,
                 ),
             )
             if cursor.rowcount != 1:
@@ -235,8 +262,8 @@ def claim_scheduled_run(
                     claimed_at,
                     "Scheduled occurrence claimed.",
                     _canonical_details(scheduling_details),
-                    task.next_run_at,
-                    next_run_at,
+                    occurrence.scheduled_for,
+                    occurrence.next_run_at,
                 ),
             )
             connection.commit()
@@ -244,7 +271,7 @@ def claim_scheduled_run(
         raise
     except sqlite3.Error as error:
         raise RunError("scheduled Run could not be claimed") from error
-    return run_id
+    return ScheduledClaim(run_id=run_id, task=task)
 
 
 def get_run(path: Path, run_id: str) -> Run:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 import hashlib
 import json
 import math
@@ -135,6 +135,13 @@ Schedule = DailySchedule | IntervalDaysSchedule
 
 
 @dataclass(frozen=True)
+class ScheduledOccurrence:
+    scheduled_for: str
+    next_run_at: str
+    missed_occurrences_skipped: int
+
+
+@dataclass(frozen=True)
 class TaskInput:
     name: str
     description: str
@@ -241,6 +248,45 @@ class Task:
             "timezone": self.timezone_name,
             "updated_at": self.updated_at,
         }
+
+
+def next_scheduled_occurrence(
+    task: Task,
+    current_time: datetime,
+) -> ScheduledOccurrence:
+    if current_time.tzinfo is None or current_time.utcoffset() is None:
+        raise TaskValidationError("scheduler current time must include a UTC offset")
+    task_timezone = ZoneInfo(task.timezone_name)
+    scheduled_at = datetime.fromisoformat(
+        task.next_run_at.replace("Z", "+00:00")
+    ).astimezone(task_timezone)
+    interval_days = (
+        task.schedule.days
+        if isinstance(task.schedule, IntervalDaysSchedule)
+        else 1
+    )
+    schedule_hour, schedule_minute = (
+        int(part) for part in task.schedule.time.split(":")
+    )
+    schedule_time = time(hour=schedule_hour, minute=schedule_minute)
+    next_date = scheduled_at.date()
+    missed_occurrences_skipped = 0
+
+    while True:
+        next_date += timedelta(days=interval_days)
+        next_local = datetime.combine(next_date, schedule_time, tzinfo=task_timezone)
+        next_utc = next_local.astimezone(timezone.utc)
+        round_trip = next_utc.astimezone(task_timezone)
+        if round_trip.replace(tzinfo=None) != next_local.replace(tzinfo=None):
+            missed_occurrences_skipped += 1
+            continue
+        if next_utc > current_time:
+            return ScheduledOccurrence(
+                scheduled_for=task.next_run_at,
+                next_run_at=_canonical_utc_timestamp(next_utc),
+                missed_occurrences_skipped=missed_occurrences_skipped,
+            )
+        missed_occurrences_skipped += 1
 
 
 def parse_task_add_json(payload_json: str) -> TaskInput:
@@ -849,6 +895,12 @@ def _fingerprint(value: object) -> str:
 
 def _normalize_identity_text(value: str) -> str:
     return " ".join(value.casefold().split())
+
+
+def _canonical_utc_timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace(
+        "+00:00", "Z"
+    )
 
 
 def _utc_now() -> str:

@@ -111,7 +111,9 @@ Task advancement commit in the same transaction, and a unique scheduled-occurren
 constraint prevents competing processes from claiming the same occurrence.
 
 Each Task advances by its own local-calendar interval using Python `zoneinfo`; a
-14-day Task therefore remains fortnightly behind a daily wake. After downtime, one
+14-day Task therefore remains fortnightly behind a daily wake. A local wall time that
+does not exist during a daylight-saving transition is skipped rather than silently
+moving the Task to a different displayed time. After downtime, one
 catch-up Run is claimed for the oldest due occurrence and `next_run_at` advances by
 that Task's interval until it is in the future. Skipped overdue occurrences are
 recorded in the Run's `scheduling` details. Repeating `run-due` at the same current
