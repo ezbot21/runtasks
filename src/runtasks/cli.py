@@ -43,7 +43,11 @@ from runtasks.scheduler import (
     parse_scheduler_time,
     run_due_tasks,
 )
-from runtasks.secrets import SecretConfigurationError, load_secret_settings
+from runtasks.secrets import (
+    SecretConfigurationError,
+    environment_redaction_values,
+    load_secret_settings,
+)
 from runtasks.tasks import (
     Task,
     TaskConflictError,
@@ -213,6 +217,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         paths = RuntimePaths.from_environment()
         settings = load_app_settings(paths)
         secret_settings = load_secret_settings(paths)
+        process_redaction_values = environment_redaction_values()
         global _ACTIVE_REDACTOR
         _ACTIVE_REDACTOR = Redactor.from_secret_settings(secret_settings)
         if options.command == "status":
@@ -246,7 +251,12 @@ def main(arguments: Sequence[str] | None = None) -> int:
         if options.command == "search":
             return _search(paths, options.query, options.as_json)
         if options.command == "telegram":
-            return run_telegram_command(paths, secret_settings, options)
+            return run_telegram_command(
+                paths,
+                secret_settings,
+                process_redaction_values,
+                options,
+            )
     except TaskConflictError as error:
         return _report_task_conflict(error, getattr(options, "as_json", False))
     except (

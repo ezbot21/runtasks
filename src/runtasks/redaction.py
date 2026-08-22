@@ -6,7 +6,7 @@ import re
 from threading import Lock
 import traceback
 from typing import Any, Iterable, Mapping, Sequence
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 
 REDACTED = "[REDACTED]"
@@ -21,7 +21,11 @@ _SENSITIVE_PATH_LABEL = re.compile(
 )
 _SENSITIVE_PATH_ASSIGNMENT = re.compile(
     r"(?P<label>api[_-]?key|authorization|credential|password|private[_-]?key|secret|token)"
-    r"(?P<separator>[=:_-]).+",
+    r"(?P<separator>[=:_-]?).+",
+    re.IGNORECASE,
+)
+_TELEGRAM_TOKEN_PATH = re.compile(
+    r"bot\d{6,}:[A-Za-z0-9_-]{20,}\Z",
     re.IGNORECASE,
 )
 _GENERIC_PATTERNS = (
@@ -301,14 +305,19 @@ def _redact_url_path(path: str) -> str:
     for index, part in enumerate(parts):
         if not part:
             continue
+        decoded_part = unquote(part)
         if redact_next:
             parts[index] = REDACTED
             redact_next = False
             continue
-        if _SENSITIVE_PATH_LABEL.fullmatch(part) is not None:
+        if _TELEGRAM_TOKEN_PATH.fullmatch(decoded_part) is not None:
+            parts[index] = f"bot{REDACTED}"
+            continue
+        if _SENSITIVE_PATH_LABEL.fullmatch(decoded_part) is not None:
+            parts[index] = decoded_part
             redact_next = True
             continue
-        assignment = _SENSITIVE_PATH_ASSIGNMENT.fullmatch(part)
+        assignment = _SENSITIVE_PATH_ASSIGNMENT.fullmatch(decoded_part)
         if assignment is not None:
             parts[index] = (
                 f"{assignment.group('label')}"

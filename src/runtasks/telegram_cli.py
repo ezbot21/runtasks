@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from runtasks.cli_output import print_json
 from runtasks.notifications import (
@@ -59,15 +59,19 @@ def add_telegram_parser(
 def run_telegram_command(
     paths: RuntimePaths,
     secret_values: Mapping[str, str],
+    process_redaction_values: Iterable[str],
     options: argparse.Namespace,
 ) -> int:
     settings = load_telegram_settings(
         secret_values,
         require_destination=options.telegram_command != "setup",
     )
-    install_redacting_log_filter(
-        sensitive_values=(*secret_values.values(), *settings.redaction_values)
+    all_redaction_values = (
+        *secret_values.values(),
+        *process_redaction_values,
+        *settings.redaction_values,
     )
+    install_redacting_log_filter(sensitive_values=all_redaction_values)
     raw_client = PythonTelegramBotClient(settings.bot_token)
 
     if options.telegram_command == "setup":
@@ -76,7 +80,7 @@ def run_telegram_command(
         client = _configured_notification_client(
             settings,
             raw_client,
-            secret_values,
+            all_redaction_values,
         )
         return _run_test(client, options.as_json)
     if options.telegram_command == "listen":
@@ -148,7 +152,7 @@ def _run_setup(
 def _configured_notification_client(
     settings: TelegramSettings,
     raw_client: PythonTelegramBotClient,
-    secret_values: Mapping[str, str],
+    redaction_values: Iterable[str],
 ) -> NotificationClient:
     if settings.destination is None:
         raise TelegramConfigurationError(
@@ -158,7 +162,7 @@ def _configured_notification_client(
     return build_telegram_notification_client(
         raw_client,
         settings.destination,
-        sensitive_values=(*secret_values.values(), *settings.redaction_values),
+        sensitive_values=redaction_values,
     )
 
 

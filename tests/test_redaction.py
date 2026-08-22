@@ -12,14 +12,17 @@ from runtasks.redaction import (
     install_redacting_log_filter,
     redact_text,
 )
-from runtasks.secrets import load_secret_settings
+from runtasks.secrets import (
+    environment_redaction_values,
+    load_secret_settings,
+)
 
 
 TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
 
 
 class RedactionTests(unittest.TestCase):
-    def test_credential_named_process_environment_values_are_private(self) -> None:
+    def test_process_environment_redaction_is_separate_from_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             paths = RuntimePaths.from_environment(
@@ -29,16 +32,26 @@ class RedactionTests(unittest.TestCase):
                 },
                 global_lock_directory=root / "locks",
             )
-            values = load_secret_settings(
-                paths,
-                {
-                    "AWS_SECRET_ACCESS_KEY": "aws-private-value",
-                    "ORDINARY_SETTING": "public-value",
-                },
-            )
+            environment = {
+                "AWS_SECRET_ACCESS_KEY": "aws-private-value",
+                "ORDINARY_SETTING": "ordinary-environment-value",
+                "RUNTASKS_TELEGRAM_BOT_TOKEN": TOKEN,
+            }
+            values = load_secret_settings(paths, environment)
+            redaction_values = environment_redaction_values(environment)
 
-        self.assertEqual(values["AWS_SECRET_ACCESS_KEY"], "aws-private-value")
+        self.assertEqual(values["RUNTASKS_TELEGRAM_BOT_TOKEN"], TOKEN)
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", values)
         self.assertNotIn("ORDINARY_SETTING", values)
+        self.assertIn("aws-private-value", redaction_values)
+        self.assertIn("ordinary-environment-value", redaction_values)
+        self.assertNotIn(
+            "ordinary-environment-value",
+            redact_text(
+                "message contains ordinary-environment-value",
+                sensitive_values=redaction_values,
+            ),
+        )
 
     def test_redaction_removes_credentials_environment_values_and_sensitive_urls(self) -> None:
         text = (
@@ -54,6 +67,10 @@ class RedactionTests(unittest.TestCase):
             "http://example.test:bad/private/path "
             "https://docs.example.test/public/guide "
             "https://files.example.test/password/path-secret-value "
+            "https://files.example.test/credentialValue "
+            "https://files.example.test/password%2Fencoded-secret "
+            "https://api.telegram.org/"
+            "bot987654321:ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ/getUpdates "
             f"https://api.telegram.org/bot{TOKEN}/getUpdates"
         )
 
@@ -77,6 +94,9 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn(":bad", redacted)
         self.assertIn("https://docs.example.test/public/guide", redacted)
         self.assertNotIn("path-secret-value", redacted)
+        self.assertNotIn("credentialValue", redacted)
+        self.assertNotIn("encoded-secret", redacted)
+        self.assertNotIn("987654321:ZZZZ", redacted)
         self.assertIn("https://files.example.test/password/", redacted)
         self.assertIn("https://api.telegram.org/", redacted)
         self.assertIn("[REDACTED]", redacted)

@@ -10,10 +10,6 @@ from runtasks.paths import RuntimePaths
 
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-_PRIVATE_ENVIRONMENT_NAME = re.compile(
-    r"(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|API_KEY|PRIVATE_KEY)",
-    re.IGNORECASE,
-)
 
 
 class SecretConfigurationError(ValueError):
@@ -30,18 +26,21 @@ def load_secret_settings(
         {
             name: value
             for name, value in process_environment.items()
-            if _is_private_environment_name(name)
+            if name.startswith("RUNTASKS_") and name != "RUNTASKS_HOME"
         }
     )
     return MappingProxyType(values)
 
 
-def _is_private_environment_name(name: str) -> bool:
-    return (
-        name != "RUNTASKS_HOME"
-        and (
-            name.startswith("RUNTASKS_")
-            or _PRIVATE_ENVIRONMENT_NAME.search(name) is not None
+def environment_redaction_values(
+    environment: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    process_environment = os.environ if environment is None else environment
+    return tuple(
+        sorted(
+            {value for value in process_environment.values() if value},
+            key=len,
+            reverse=True,
         )
     )
 
