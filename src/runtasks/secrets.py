@@ -27,6 +27,10 @@ _PUBLIC_PROCESS_ENVIRONMENT_NAMES = {
 }
 _MINIMUM_REDACTION_VALUE_LENGTH = 4
 _PUBLIC_PROCESS_ENVIRONMENT_VALUES = {"false", "none", "null", "true"}
+_SENSITIVE_PROCESS_ENVIRONMENT_NAME = re.compile(
+    r"(?:API[_-]?KEY|AUTHORIZATION|CREDENTIAL|PASSCODE|PASSWORD|PIN|PRIVATE[_-]?KEY|SECRET|TOKEN)",
+    re.IGNORECASE,
+)
 
 
 class SecretConfigurationError(ValueError):
@@ -59,9 +63,15 @@ def environment_redaction_values(
                 value
                 for name, value in process_environment.items()
                 if name not in _PUBLIC_PROCESS_ENVIRONMENT_NAMES
-                and len(value) >= _MINIMUM_REDACTION_VALUE_LENGTH
-                and value.casefold() not in _PUBLIC_PROCESS_ENVIRONMENT_VALUES
-                and not value.isdecimal()
+                and (
+                    _SENSITIVE_PROCESS_ENVIRONMENT_NAME.search(name) is not None
+                    or (
+                        len(value) >= _MINIMUM_REDACTION_VALUE_LENGTH
+                        and value.casefold()
+                        not in _PUBLIC_PROCESS_ENVIRONMENT_VALUES
+                        and not value.isdecimal()
+                    )
+                )
             },
             key=len,
             reverse=True,

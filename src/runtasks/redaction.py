@@ -84,7 +84,7 @@ class Redactor:
         secrets = {
             value
             for value in values
-            if len(value) >= 4 and len(value) <= _MAX_SECRET_LENGTH
+            if value and len(value) <= _MAX_SECRET_LENGTH
         }
         return cls(tuple(sorted(secrets, key=len, reverse=True)))
 

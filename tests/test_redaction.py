@@ -40,7 +40,9 @@ class RedactionTests(unittest.TestCase):
             environment = {
                 "AWS_SECRET_ACCESS_KEY": "aws-private-value",
                 "HOME": "/displayed/user/home",
+                "API_KEY": "xy",
                 "ORDINARY_SETTING": "ordinary-environment-value",
+                "PRIVATE_PIN": "123456",
                 "RUNTASKS_TELEGRAM_BOT_TOKEN": TOKEN,
                 "SHORT_VALUE": "1",
                 "TRUE_SETTING": "true",
@@ -52,7 +54,9 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn("AWS_SECRET_ACCESS_KEY", values)
         self.assertNotIn("ORDINARY_SETTING", values)
         self.assertIn("aws-private-value", redaction_values)
+        self.assertIn("xy", redaction_values)
         self.assertIn("ordinary-environment-value", redaction_values)
+        self.assertIn("123456", redaction_values)
         self.assertNotIn("/displayed/user/home", redaction_values)
         self.assertNotIn("1", redaction_values)
         self.assertNotIn("true", redaction_values)
@@ -68,10 +72,19 @@ class RedactionTests(unittest.TestCase):
         configure_cli_redactor(Redactor.from_secret_values(redaction_values))
         try:
             with redirect_stdout(output):
-                print_json({"value": "ordinary-environment-value"})
+                print_json(
+                    {
+                        "numeric": "123456",
+                        "short": "xy",
+                        "value": "ordinary-environment-value",
+                    }
+                )
         finally:
             configure_cli_redactor(DEFAULT_REDACTOR)
-        self.assertEqual(json.loads(output.getvalue())["value"], "[REDACTED]")
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["numeric"], "[REDACTED]")
+        self.assertEqual(payload["short"], "[REDACTED]")
+        self.assertEqual(payload["value"], "[REDACTED]")
 
     def test_redaction_removes_credentials_environment_values_and_sensitive_urls(self) -> None:
         text = (
