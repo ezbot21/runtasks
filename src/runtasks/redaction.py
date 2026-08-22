@@ -89,12 +89,7 @@ class Redactor:
         return cls(tuple(sorted(secrets, key=len, reverse=True)))
 
     def text(self, value: str) -> str:
-        redacted = value
-        for secret in self.secret_values:
-            redacted = redacted.replace(secret, REDACTED)
-        for pattern in _GENERIC_PATTERNS:
-            redacted = pattern.sub(REDACTED, redacted)
-        return redacted
+        return redact_text(value, sensitive_values=self.secret_values)
 
     def value(self, value: object, *, key: str | None = None) -> object:
         if key is not None and _SENSITIVE_KEY.search(key):

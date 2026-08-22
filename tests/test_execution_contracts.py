@@ -29,7 +29,7 @@ class ExternalAdapterContractTests(unittest.TestCase):
         )
         self.assertEqual(outcome.details["credential"], "[REDACTED]")
         self.assertEqual(outcome.details["validation"], "Accepted [REDACTED]")
-        self.assertEqual(outcome.external_log_ref, "[REDACTED]example.invalid/log")
+        self.assertEqual(outcome.external_log_ref, "https://example.invalid/log")
 
     def test_malformed_outcomes_are_rejected_without_process_details_leaking(self) -> None:
         invalid_outcomes = (

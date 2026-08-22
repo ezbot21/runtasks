@@ -32,7 +32,7 @@ class TelegramConfigurationTests(unittest.TestCase):
         self.assertIsNone(settings.destination.thread_id)
         self.assertNotIn(TOKEN, repr(settings))
 
-    def test_each_allowed_user_can_authorize_from_their_own_private_chat(self) -> None:
+    def test_private_authorization_requires_the_configured_chat_id(self) -> None:
         settings = load_telegram_settings(
             {
                 "RUNTASKS_TELEGRAM_BOT_TOKEN": TOKEN,
@@ -50,7 +50,9 @@ class TelegramConfigurationTests(unittest.TestCase):
             )
         )
 
-        self.assertTrue(verification.authorized)
+        self.assertTrue(verification.user_allowed)
+        self.assertFalse(verification.chat_matches)
+        self.assertFalse(verification.authorized)
 
     def test_group_destination_can_load_an_optional_thread_id(self) -> None:
         settings = load_telegram_settings(

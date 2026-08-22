@@ -67,7 +67,7 @@ class TelegramSettings:
 
     @property
     def has_authorization_configuration(self) -> bool:
-        return bool(self.allowed_user_ids) or self.destination is not None
+        return bool(self.allowed_user_ids) and self.destination is not None
 
     def verify_authorization(
         self,
@@ -76,6 +76,8 @@ class TelegramSettings:
         private_chat_matches_user = (
             context.chat_type == "private"
             and context.chat_id == context.user_id
+            and self.destination is not None
+            and context.chat_id == self.destination.chat_id
         )
         configured_group_matches = (
             context.chat_type in {"group", "supergroup"}
