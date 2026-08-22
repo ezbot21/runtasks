@@ -21,7 +21,7 @@ class RuntimePaths:
         global_lock_directory: Path | None = None,
     ) -> RuntimePaths:
         values = os.environ if environment is None else environment
-        runtime_default_home = _environment_user_home(values) / "runtasks"
+        runtime_default_home = Path.home() / "runtasks"
         override = values.get("RUNTASKS_HOME")
         home = Path(override).expanduser() if override else runtime_default_home
         lock_directory = global_lock_directory or (
@@ -69,15 +69,6 @@ class RuntimePaths:
             self.log_directory,
             self.backup_directory,
         )
-
-
-def _environment_user_home(values: Mapping[str, str]) -> Path:
-    user_home_value = values.get("HOME")
-    return (
-        Path(user_home_value).expanduser()
-        if user_home_value
-        else Path.home()
-    )
 
 
 def _canonical_user_home() -> Path:
