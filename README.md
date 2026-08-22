@@ -32,6 +32,8 @@ RunTasks resolves its runtime home in this order:
 1. `RUNTASKS_HOME`, when set.
 2. `~/runtasks`, based on the current user's home directory.
 
+This override relocates runtime-specific configuration, database, log, and backup files. The token-hash Telegram poller lock is the sole account-global exception: it remains under the OS account's canonical `~/runtasks/var/data/` directory so separate runtime homes cannot poll the same bot concurrently. See [ADR 0001](docs/adr/0001-account-global-telegram-poller-lock.md).
+
 Initialize and inspect it through the public CLI:
 
 ```bash
