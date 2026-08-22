@@ -183,6 +183,22 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn("structured-secret", logged)
         self.assertNotIn("998877665", logged)
 
+    def test_log_filter_preserves_numeric_logging_control_fields(self) -> None:
+        record = logging.LogRecord(
+            name="telegram.request",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=40,
+            msg="safe message",
+            args=(),
+            exc_info=None,
+        )
+
+        RedactingLogFilter(sensitive_values=("40",)).filter(record)
+
+        self.assertEqual(record.levelno, logging.ERROR)
+        self.assertEqual(record.lineno, 40)
+
     def test_log_filter_redacts_values_urls_and_exception_text(self) -> None:
         record = logging.LogRecord(
             name="telegram.request",

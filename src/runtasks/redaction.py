@@ -68,6 +68,15 @@ _PRIVATE_KEY_BLOCK = re.compile(
     re.DOTALL,
 )
 _URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+")
+_LOG_NUMERIC_CONTROL_FIELDS = {
+    "created",
+    "levelno",
+    "lineno",
+    "msecs",
+    "process",
+    "relativeCreated",
+    "thread",
+}
 _LOG_HANDLER_LOCK = Lock()
 _LOG_SENSITIVE_VALUES: set[str] = set()
 _ORIGINAL_LOG_RECORD_FACTORY = logging.getLogRecordFactory()
@@ -221,6 +230,8 @@ def _redact_log_value(
     *,
     sensitive_values: Iterable[str],
 ) -> Any:
+    if name in _LOG_NUMERIC_CONTROL_FIELDS:
+        return value
     if _SENSITIVE_KEY.search(name) is not None:
         return REDACTED
     sensitive_value_set = set(sensitive_values)
