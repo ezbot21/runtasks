@@ -52,6 +52,7 @@ class RedactionTests(unittest.TestCase):
             f"https://user:password@example.test/path?q={TOKEN} "
             f"ssh://user:credential@example.test/private/key "
             "http://example.test:bad/private/path "
+            "https://docs.example.test/public/guide "
             f"https://api.telegram.org/bot{TOKEN}/getUpdates"
         )
 
@@ -71,14 +72,10 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn("private-key-body", redacted)
         self.assertNotIn("short=xy", redacted)
         self.assertNotIn("user:password", redacted)
-        self.assertNotIn("example.test", redacted)
-        self.assertNotIn("api.telegram.org", redacted)
         self.assertNotIn("user:credential", redacted)
-        self.assertNotIn("/path", redacted)
-        self.assertNotIn("/private/key", redacted)
         self.assertNotIn(":bad", redacted)
-        self.assertNotIn("/private/path", redacted)
-        self.assertNotIn("/getUpdates", redacted)
+        self.assertIn("https://docs.example.test/public/guide", redacted)
+        self.assertIn("https://api.telegram.org/", redacted)
         self.assertIn("[REDACTED]", redacted)
 
     def test_future_loggers_and_handlers_receive_redacted_records(self) -> None:
@@ -113,9 +110,9 @@ class RedactionTests(unittest.TestCase):
 
         logged = output.getvalue()
         self.assertNotIn(TOKEN, logged)
-        self.assertNotIn("api.telegram.org", logged)
+        self.assertIn("https://api.telegram.org/", logged)
         self.assertNotIn("generic-secret", logged)
-        self.assertNotIn("internal.example", logged)
+        self.assertIn("https://internal.example/", logged)
         self.assertNotIn("structured-secret", logged)
         self.assertNotIn("998877665", logged)
 

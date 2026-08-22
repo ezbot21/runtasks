@@ -6,6 +6,7 @@ import re
 from threading import Lock
 import traceback
 from typing import Any, Iterable, Mapping, Sequence
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 REDACTED = "[REDACTED]"
@@ -256,5 +257,24 @@ def _redact_log_value(
 
 
 def _redact_url(match: re.Match[str]) -> str:
-    del match
-    return REDACTED
+    parsed = urlsplit(match.group(0))
+    if parsed.hostname is None:
+        return REDACTED
+    hostname = (
+        f"[{parsed.hostname}]"
+        if ":" in parsed.hostname
+        else parsed.hostname
+    )
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    netloc = f"{hostname}:{port}" if port is not None else hostname
+    query = urlencode(
+        [(name, REDACTED) for name, _ in parse_qsl(parsed.query)],
+        doseq=True,
+    )
+    fragment = REDACTED if parsed.fragment else ""
+    return urlunsplit(
+        (parsed.scheme, netloc, parsed.path, query, fragment)
+    )

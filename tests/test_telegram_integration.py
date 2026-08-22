@@ -194,8 +194,10 @@ class TelegramIntegrationTests(unittest.IsolatedAsyncioTestCase):
         leaked_message = raw_client.messages[1]
         self.assertNotIn(TOKEN, leaked_message)
         self.assertNotIn("private-environment-value", leaked_message)
-        self.assertNotIn("/sendMessage", leaked_message)
-        self.assertIn("[REDACTED]", leaked_message)
+        self.assertIn(
+            "https://api.telegram.org/bot[REDACTED]/sendMessage",
+            leaked_message,
+        )
 
     async def test_notification_interface_contains_transport_exception_secrets(self) -> None:
         client = RedactingNotificationClient(
@@ -240,7 +242,10 @@ class TelegramIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raw_client.sent[0][0], 998877665)
         self.assertNotIn(TOKEN, raw_client.sent[0][1])
-        self.assertNotIn("api.telegram.org", raw_client.sent[0][1])
+        self.assertIn(
+            "https://api.telegram.org/bot[REDACTED]/send",
+            raw_client.sent[0][1],
+        )
         self.assertIsNone(raw_client.sent[0][2])
 
 
