@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import sys
 from typing import Any, Iterable, Mapping, Sequence
 
-from runtasks.cli_output import print_json
+from runtasks.cli_output import print_json, print_text
 from runtasks.notifications import (
     NotificationClient,
     NotificationDestinationError,
@@ -105,9 +104,9 @@ def _run_setup(
     discovery = asyncio.run(
         poller.discover_setup_candidates(
             timeout_seconds=options.timeout,
-            on_ready=lambda: print(
+            on_ready=lambda: print_text(
                 "Send /start to the bot now; waiting for a new update...",
-                file=sys.stderr,
+                error=True,
                 flush=True,
             ),
             candidate_filter=(
@@ -171,7 +170,7 @@ def _run_test(client: NotificationClient, as_json: bool) -> int:
     if as_json:
         print_json({"status": "sent", "transport": "telegram"})
     else:
-        print("Telegram test notification sent.")
+        print_text("Telegram test notification sent.")
     return 0
 
 
@@ -191,11 +190,11 @@ def _run_listener(
             await listen_for_authorization_checks(
                 session,
                 settings,
-                on_ready=lambda: print(
+                on_ready=lambda: print_text(
                     "RunTasks Telegram authorization listener started.",
                     flush=True,
                 ),
-                on_authorized=lambda: print(
+                on_authorized=lambda: print_text(
                     "Authorized Telegram /start received.",
                     flush=True,
                 ),
@@ -224,31 +223,32 @@ def _render_setup_result(
             }
         )
         return
-    if status != "ok":
+    error_output = status != "ok"
+    if error_output:
         heading = (
             "Telegram authorization mismatch:"
             if status == "authorization-mismatch"
             else "Telegram notification destination is invalid:"
         )
-        print(heading, file=sys.stderr)
-        output = sys.stderr
+        print_text(heading, error=True)
     else:
-        print("Telegram /start updates found through official Bot API long polling:")
-        output = sys.stdout
+        print_text(
+            "Telegram /start updates found through official Bot API long polling:"
+        )
     for candidate in candidates:
         payload = _candidate_payload(candidate, settings)
-        print(
+        print_text(
             f"User ID: {payload['user_id']}  "
             f"Chat ID: {payload['chat_id']}  "
             f"Chat type: {candidate.chat_type}",
-            file=output,
+            error=error_output,
         )
         if settings.has_authorization_configuration:
             verification = settings.verify_authorization(
                 candidate.authorization_context
             )
             result = "verified" if verification.authorized else "mismatch"
-            print(f"Authorization: {result}", file=output)
+            print_text(f"Authorization: {result}", error=error_output)
 
 
 def _candidate_payload(
@@ -264,7 +264,7 @@ def _candidate_payload(
             payload["user_id"] = "[configured]"
         if candidate.chat_id in configured_ids:
             payload["chat_id"] = "[configured]"
-        payload["authorization"] = settings.verify_authorization(
+        payload["verification"] = settings.verify_authorization(
             candidate.authorization_context
         ).as_dict()
     return payload

@@ -7,6 +7,11 @@ from typing import Any, Mapping, NoReturn, Sequence, cast
 
 from runtasks.adapters import ExternalAdapterError, build_external_adapter
 
+from runtasks.cli_output import (
+    configure_cli_redactor,
+    print_json,
+    print_text,
+)
 from runtasks.config import (
     AppSettings,
     ConfigurationError,
@@ -220,6 +225,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         process_redaction_values = environment_redaction_values()
         global _ACTIVE_REDACTOR
         _ACTIVE_REDACTOR = Redactor.from_secret_settings(secret_settings)
+        configure_cli_redactor(_ACTIVE_REDACTOR)
         if options.command == "status":
             return _status(paths, settings, options.as_json)
         if options.command == "init":
@@ -703,11 +709,11 @@ def _report_error(message: str, as_json: bool) -> int:
 
 
 def _safe_print(message: str, *, error: bool = False) -> None:
-    print(_ACTIVE_REDACTOR.text(message), file=sys.stderr if error else sys.stdout)
+    print_text(message, error=error)
 
 
 def _print_json(payload: dict[str, Any]) -> None:
-    print(json.dumps(_ACTIVE_REDACTOR.value(payload), indent=2, sort_keys=True))
+    print_json(payload)
 
 
 if __name__ == "__main__":

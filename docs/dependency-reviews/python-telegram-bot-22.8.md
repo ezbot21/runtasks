@@ -18,7 +18,7 @@ RunTasks uses only the asynchronous `telegram.Bot` client for:
 
 - `getMe` to verify the bot username;
 - `getWebhookInfo` to reject webhook mode;
-- `getUpdates` with a positive timeout for long polling;
+- `getUpdates` with a positive timeout for long polling, plus one non-blocking `timeout=0`, `offset=-1` request during setup to drain stale pending updates before waiting for the operator's new `/start`;
 - `getChat` and `getChatMember` to verify private or group destinations;
 - `sendChatAction` with a configured forum topic ID to verify that the topic exists and is writable;
 - `sendMessage` for redacted outbound notifications.

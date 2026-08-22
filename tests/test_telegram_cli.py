@@ -111,7 +111,7 @@ class TelegramCliTests(unittest.TestCase):
             {
                 "candidates": [
                     {
-                        "authorization": {
+                        "verification": {
                             "authorized": True,
                             "chat_matches": True,
                             "user_allowed": True,
@@ -164,7 +164,7 @@ class TelegramCliTests(unittest.TestCase):
         self.assertEqual(mismatch_payload["status"], "authorization-mismatch")
         self.assertEqual(mismatch_payload["candidates"][0]["user_id"], 112233445)
         self.assertFalse(
-            mismatch_payload["candidates"][0]["authorization"]["authorized"]
+            mismatch_payload["candidates"][0]["verification"]["authorized"]
         )
         self.assertNotIn(TOKEN, result.stdout + result.stderr)
 
