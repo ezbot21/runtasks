@@ -11,17 +11,20 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 REDACTED = "[REDACTED]"
 _MAX_SECRET_LENGTH = 4_096
+_SENSITIVE_LABEL_PATTERN = (
+    r"api[_-]?key|authorization|credential|passcode|password|pin|"
+    r"private[_-]?key|secret|token"
+)
 _SENSITIVE_KEY = re.compile(
-    r"(?:api[_-]?key|authorization|credential|password|private[_-]?key|secret|token)",
+    rf"(?:{_SENSITIVE_LABEL_PATTERN})",
     re.IGNORECASE,
 )
 _SENSITIVE_PATH_LABEL = re.compile(
-    r"(?:api[_-]?key|authorization|credential|password|private[_-]?key|secret|token)",
+    rf"(?:{_SENSITIVE_LABEL_PATTERN})",
     re.IGNORECASE,
 )
 _SENSITIVE_PATH_ASSIGNMENT = re.compile(
-    r"(?P<label>api[_-]?key|authorization|credential|password|private[_-]?key|secret|token)"
-    r"(?P<separator>[=:_-]?).+",
+    rf"(?P<label>{_SENSITIVE_LABEL_PATTERN})(?P<separator>[=:_-]?).+",
     re.IGNORECASE,
 )
 _TELEGRAM_TOKEN_PATH = re.compile(
@@ -31,7 +34,7 @@ _TELEGRAM_TOKEN_PATH = re.compile(
 _GENERIC_PATTERNS = (
     re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]{4,}", re.IGNORECASE),
     re.compile(
-        r"\b(?:token|password|secret|api[_ -]?key)\s*[:=]\s*\S+",
+        r"\b(?:token|password|passcode|pin|secret|api[_ -]?key)\s*[:=]\s*\S+",
         re.IGNORECASE,
     ),
     re.compile(r"https?://[^/\s:@]+:[^@\s/]+@", re.IGNORECASE),
@@ -47,13 +50,14 @@ _GENERIC_PATTERNS = (
 )
 _ENVIRONMENT_ASSIGNMENT = re.compile(r"\bRUNTASKS_[A-Z0-9_]+=([^\s]+)")
 _CREDENTIAL_ASSIGNMENT = re.compile(
-    r"\b[A-Za-z_][A-Za-z0-9_]*(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|API_KEY|PRIVATE_KEY)"
+    r"\b[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:TOKEN|PASSWORD|PASSCODE|PIN|SECRET|CREDENTIAL|API_KEY|PRIVATE_KEY)"
     r"[A-Za-z0-9_]*\s*=\s*([^\s]+)",
     re.IGNORECASE,
 )
 _CREDENTIAL_LABEL = re.compile(
     r"\b(?:Authorization\s*[:=]\s*(?:Bearer|Basic)\s+|"
-    r"[\"']?(?:password|token|secret|credential|api[_ -]?key|private[_ -]?key)"
+    r"[\"']?(?:password|passcode|pin|token|secret|credential|api[_ -]?key|private[_ -]?key)"
     r"[\"']?\s*[:=]\s*)"
     r"(\"[^\"]*\"|'[^']*'|[^\s,;}]+)",
     re.IGNORECASE,
@@ -128,7 +132,7 @@ def redact_text(text: str, *, sensitive_values: Iterable[str] = ()) -> str:
         reverse=True,
     )
     for value in values:
-        redacted = redacted.replace(value, REDACTED)
+        redacted = _replace_sensitive_value(redacted, value)
     redacted = _PRIVATE_KEY_BLOCK.sub(REDACTED, redacted)
     for assignment_pattern in (
         _ENVIRONMENT_ASSIGNMENT,
@@ -262,6 +266,16 @@ def _redact_log_value(
     except Exception:
         return REDACTED
     return redact_text(rendered, sensitive_values=sensitive_value_set)
+
+
+def _replace_sensitive_value(text: str, value: str) -> str:
+    if len(value) >= 4 and not value.isdecimal():
+        return text.replace(value, REDACTED)
+    return re.sub(
+        rf"(?<![A-Za-z0-9]){re.escape(value)}(?![A-Za-z0-9])",
+        REDACTED,
+        text,
+    )
 
 
 def _redact_url(match: re.Match[str]) -> str:

@@ -224,9 +224,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         secret_settings = load_secret_settings(paths)
         process_redaction_values = environment_redaction_values()
         global _ACTIVE_REDACTOR
-        _ACTIVE_REDACTOR = Redactor.from_secret_values(
-            (*secret_settings.values(), *process_redaction_values)
-        )
+        _ACTIVE_REDACTOR = Redactor.from_secret_settings(secret_settings)
         configure_cli_redactor(_ACTIVE_REDACTOR)
         if options.command == "status":
             return _status(paths, settings, options.as_json)
@@ -259,6 +257,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
         if options.command == "search":
             return _search(paths, options.query, options.as_json)
         if options.command == "telegram":
+            configure_cli_redactor(
+                Redactor.from_secret_values(
+                    (*secret_settings.values(), *process_redaction_values)
+                )
+            )
             return run_telegram_command(
                 paths,
                 secret_settings,

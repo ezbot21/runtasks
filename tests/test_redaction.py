@@ -58,7 +58,7 @@ class RedactionTests(unittest.TestCase):
         self.assertIn("ordinary-environment-value", redaction_values)
         self.assertIn("123456", redaction_values)
         self.assertNotIn("/displayed/user/home", redaction_values)
-        self.assertNotIn("1", redaction_values)
+        self.assertIn("1", redaction_values)
         self.assertNotIn("true", redaction_values)
         self.assertNotIn(
             "ordinary-environment-value",
@@ -75,6 +75,7 @@ class RedactionTests(unittest.TestCase):
                 print_json(
                     {
                         "numeric": "123456",
+                        "one": "1",
                         "short": "xy",
                         "value": "ordinary-environment-value",
                     }
@@ -83,8 +84,18 @@ class RedactionTests(unittest.TestCase):
             configure_cli_redactor(DEFAULT_REDACTOR)
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["numeric"], "[REDACTED]")
+        self.assertEqual(payload["one"], "[REDACTED]")
         self.assertEqual(payload["short"], "[REDACTED]")
         self.assertEqual(payload["value"], "[REDACTED]")
+        self.assertEqual(
+            redact_text("proxy", sensitive_values=("xy",)),
+            "proxy",
+        )
+        self.assertNotIn("654321", redact_text("passcode: 654321"))
+        self.assertEqual(
+            Redactor().value({"pin": "123456"}),
+            {"pin": "[REDACTED]"},
+        )
 
     def test_redaction_removes_credentials_environment_values_and_sensitive_urls(self) -> None:
         text = (
