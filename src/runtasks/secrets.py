@@ -23,6 +23,7 @@ _PUBLIC_PROCESS_ENVIRONMENT_NAMES = {
     "SHLVL",
     "TERM",
     "USER",
+    "XDG_SESSION_CLASS",
     "_",
 }
 _PUBLIC_PROCESS_ENVIRONMENT_VALUES = {"false", "none", "null", "true"}

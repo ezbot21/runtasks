@@ -76,7 +76,10 @@ class TelegramCliTests(unittest.TestCase):
                 "telegram",
                 "setup",
                 "--json",
-                environment={"RUNTASKS_TELEGRAM_BOT_TOKEN": TOKEN},
+                environment={
+                    "RUNTASKS_TELEGRAM_BOT_TOKEN": TOKEN,
+                    "XDG_SESSION_CLASS": "user",
+                },
                 telegram_state=state,
             )
 
