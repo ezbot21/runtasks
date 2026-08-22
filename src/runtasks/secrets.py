@@ -26,6 +26,7 @@ _PUBLIC_PROCESS_ENVIRONMENT_NAMES = {
     "_",
 }
 _MINIMUM_REDACTION_VALUE_LENGTH = 4
+_PUBLIC_PROCESS_ENVIRONMENT_VALUES = {"false", "none", "null", "true"}
 
 
 class SecretConfigurationError(ValueError):
@@ -59,6 +60,8 @@ def environment_redaction_values(
                 for name, value in process_environment.items()
                 if name not in _PUBLIC_PROCESS_ENVIRONMENT_NAMES
                 and len(value) >= _MINIMUM_REDACTION_VALUE_LENGTH
+                and value.casefold() not in _PUBLIC_PROCESS_ENVIRONMENT_VALUES
+                and not value.isdecimal()
             },
             key=len,
             reverse=True,

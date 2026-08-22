@@ -43,6 +43,7 @@ class RedactionTests(unittest.TestCase):
                 "ORDINARY_SETTING": "ordinary-environment-value",
                 "RUNTASKS_TELEGRAM_BOT_TOKEN": TOKEN,
                 "SHORT_VALUE": "1",
+                "TRUE_SETTING": "true",
             }
             values = load_secret_settings(paths, environment)
             redaction_values = environment_redaction_values(environment)
@@ -54,6 +55,7 @@ class RedactionTests(unittest.TestCase):
         self.assertIn("ordinary-environment-value", redaction_values)
         self.assertNotIn("/displayed/user/home", redaction_values)
         self.assertNotIn("1", redaction_values)
+        self.assertNotIn("true", redaction_values)
         self.assertNotIn(
             "ordinary-environment-value",
             redact_text(
