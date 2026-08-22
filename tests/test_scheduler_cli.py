@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import signal
 import sqlite3
 import subprocess
 import tempfile
@@ -372,6 +373,7 @@ class SchedulerCliTests(unittest.TestCase):
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                start_new_session=True,
             )
             database_file = home / "var" / "data" / "runtasks.sqlite3"
 
@@ -389,7 +391,7 @@ class SchedulerCliTests(unittest.TestCase):
                         break
                 time.sleep(0.02)
             self.assertEqual(observed_status, "running")
-            process.kill()
+            os.killpg(process.pid, signal.SIGKILL)
             process.communicate(timeout=5)
 
             repeated = self.run_cli(
