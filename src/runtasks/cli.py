@@ -224,7 +224,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
         secret_settings = load_secret_settings(paths)
         process_redaction_values = environment_redaction_values()
         global _ACTIVE_REDACTOR
-        _ACTIVE_REDACTOR = Redactor.from_secret_settings(secret_settings)
+        _ACTIVE_REDACTOR = Redactor.from_secret_values(
+            (*secret_settings.values(), *process_redaction_values)
+        )
         configure_cli_redactor(_ACTIVE_REDACTOR)
         if options.command == "status":
             return _status(paths, settings, options.as_json)

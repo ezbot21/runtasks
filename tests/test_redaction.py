@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 import io
+import json
 import logging
 from pathlib import Path
 import tempfile
 import unittest
 
+from runtasks.cli_output import configure_cli_redactor, print_json
 from runtasks.paths import RuntimePaths
 from runtasks.redaction import (
+    DEFAULT_REDACTOR,
     RedactingLogFilter,
+    Redactor,
     install_redacting_log_filter,
     redact_text,
 )
@@ -34,8 +39,10 @@ class RedactionTests(unittest.TestCase):
             )
             environment = {
                 "AWS_SECRET_ACCESS_KEY": "aws-private-value",
+                "HOME": "/displayed/user/home",
                 "ORDINARY_SETTING": "ordinary-environment-value",
                 "RUNTASKS_TELEGRAM_BOT_TOKEN": TOKEN,
+                "SHORT_VALUE": "1",
             }
             values = load_secret_settings(paths, environment)
             redaction_values = environment_redaction_values(environment)
@@ -45,6 +52,8 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn("ORDINARY_SETTING", values)
         self.assertIn("aws-private-value", redaction_values)
         self.assertIn("ordinary-environment-value", redaction_values)
+        self.assertNotIn("/displayed/user/home", redaction_values)
+        self.assertNotIn("1", redaction_values)
         self.assertNotIn(
             "ordinary-environment-value",
             redact_text(
@@ -52,6 +61,15 @@ class RedactionTests(unittest.TestCase):
                 sensitive_values=redaction_values,
             ),
         )
+
+        output = io.StringIO()
+        configure_cli_redactor(Redactor.from_secret_values(redaction_values))
+        try:
+            with redirect_stdout(output):
+                print_json({"value": "ordinary-environment-value"})
+        finally:
+            configure_cli_redactor(DEFAULT_REDACTOR)
+        self.assertEqual(json.loads(output.getvalue())["value"], "[REDACTED]")
 
     def test_redaction_removes_credentials_environment_values_and_sensitive_urls(self) -> None:
         text = (

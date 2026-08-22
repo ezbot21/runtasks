@@ -10,6 +10,22 @@ from runtasks.paths import RuntimePaths
 
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_PUBLIC_PROCESS_ENVIRONMENT_NAMES = {
+    "HOME",
+    "LANG",
+    "LOGNAME",
+    "OLDPWD",
+    "PATH",
+    "PWD",
+    "PYTHONPATH",
+    "RUNTASKS_HOME",
+    "SHELL",
+    "SHLVL",
+    "TERM",
+    "USER",
+    "_",
+}
+_MINIMUM_REDACTION_VALUE_LENGTH = 4
 
 
 class SecretConfigurationError(ValueError):
@@ -38,7 +54,12 @@ def environment_redaction_values(
     process_environment = os.environ if environment is None else environment
     return tuple(
         sorted(
-            {value for value in process_environment.values() if value},
+            {
+                value
+                for name, value in process_environment.items()
+                if name not in _PUBLIC_PROCESS_ENVIRONMENT_NAMES
+                and len(value) >= _MINIMUM_REDACTION_VALUE_LENGTH
+            },
             key=len,
             reverse=True,
         )
