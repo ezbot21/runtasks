@@ -7,6 +7,11 @@ from typing import Any, Mapping, NoReturn, Sequence, cast
 
 from runtasks.adapters import ExternalAdapterError, build_external_adapter
 
+from runtasks.cli_output import (
+    configure_cli_redactor,
+    print_json,
+    print_text,
+)
 from runtasks.config import (
     AppSettings,
     ConfigurationError,
@@ -29,6 +34,10 @@ from runtasks.decisions import (
     search_decisions,
 )
 from runtasks.handlers import build_handler_registry
+from runtasks.notifications import (
+    NotificationDeliveryError,
+    NotificationDestinationError,
+)
 from runtasks.paths import RuntimePaths
 from runtasks.redaction import DEFAULT_REDACTOR, Redactor
 from runtasks.runs import Run, RunError, execute_manual_run, list_runs, search_runs
@@ -39,7 +48,11 @@ from runtasks.scheduler import (
     parse_scheduler_time,
     run_due_tasks,
 )
-from runtasks.secrets import SecretConfigurationError, load_secret_settings
+from runtasks.secrets import (
+    SecretConfigurationError,
+    environment_redaction_values,
+    load_secret_settings,
+)
 from runtasks.tasks import (
     Task,
     TaskConflictError,
@@ -54,6 +67,12 @@ from runtasks.tasks import (
     set_task_enabled,
     update_task,
 )
+from runtasks.telegram import (
+    PollerAlreadyRunningError,
+    TelegramConfigurationError,
+    TelegramDeliveryError,
+)
+from runtasks.telegram_cli import add_telegram_parser, run_telegram_command
 
 
 EXIT_EXECUTION_ERROR = 1
@@ -178,6 +197,8 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("query")
     _add_output_json_flag(search_parser)
 
+    add_telegram_parser(subparsers)
+
     return parser
 
 
@@ -201,8 +222,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
         paths = RuntimePaths.from_environment()
         settings = load_app_settings(paths)
         secret_settings = load_secret_settings(paths)
+        process_redaction_values = environment_redaction_values()
         global _ACTIVE_REDACTOR
         _ACTIVE_REDACTOR = Redactor.from_secret_settings(secret_settings)
+        configure_cli_redactor(_ACTIVE_REDACTOR)
         if options.command == "status":
             return _status(paths, settings, options.as_json)
         if options.command == "init":
@@ -233,8 +256,29 @@ def main(arguments: Sequence[str] | None = None) -> int:
             return _decision_command(paths, options)
         if options.command == "search":
             return _search(paths, options.query, options.as_json)
+        if options.command == "telegram":
+            configure_cli_redactor(
+                Redactor.from_secret_values(
+                    (*secret_settings.values(), *process_redaction_values)
+                )
+            )
+            return run_telegram_command(
+                paths,
+                secret_settings,
+                process_redaction_values,
+                options,
+            )
     except TaskConflictError as error:
         return _report_task_conflict(error, getattr(options, "as_json", False))
+    except (
+        NotificationDeliveryError,
+        TelegramDeliveryError,
+        PollerAlreadyRunningError,
+    ):
+        return _report_execution_error(
+            "Telegram operation failed",
+            getattr(options, "as_json", False),
+        )
     except (
         ConfigurationError,
         DatabaseError,
@@ -244,6 +288,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         RunError,
         SchedulerValidationError,
         TaskError,
+        NotificationDestinationError,
+        TelegramConfigurationError,
     ) as error:
         return _report_error(str(error), getattr(options, "as_json", False))
     except (OSError, RuntimeError, ValueError):
@@ -272,6 +318,7 @@ def _json_output_requested(arguments: Sequence[str]) -> bool:
         "run-due",
         "search",
         "status",
+        "telegram",
     }:
         return "--json" in arguments[1:]
     if command != "task" or len(arguments) < 2:
@@ -648,6 +695,15 @@ def _report_task_conflict(error: TaskConflictError, as_json: bool) -> int:
     return EXIT_VALIDATION_ERROR
 
 
+def _report_execution_error(message: str, as_json: bool) -> int:
+    safe_message = f"RunTasks execution failed: {message}"
+    if as_json:
+        _print_json({"error": safe_message, "status": "error"})
+    else:
+        _safe_print(safe_message, error=True)
+    return EXIT_EXECUTION_ERROR
+
+
 def _report_error(message: str, as_json: bool) -> int:
     safe_message = f"RunTasks validation failed: {message}"
     if as_json:
@@ -658,11 +714,11 @@ def _report_error(message: str, as_json: bool) -> int:
 
 
 def _safe_print(message: str, *, error: bool = False) -> None:
-    print(_ACTIVE_REDACTOR.text(message), file=sys.stderr if error else sys.stdout)
+    print_text(message, error=error)
 
 
 def _print_json(payload: dict[str, Any]) -> None:
-    print(json.dumps(_ACTIVE_REDACTOR.value(payload), indent=2, sort_keys=True))
+    print_json(payload)
 
 
 if __name__ == "__main__":

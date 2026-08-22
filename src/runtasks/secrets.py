@@ -10,6 +10,26 @@ from runtasks.paths import RuntimePaths
 
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_PUBLIC_PROCESS_ENVIRONMENT_NAMES = {
+    "HOME",
+    "LANG",
+    "LOGNAME",
+    "OLDPWD",
+    "PATH",
+    "PWD",
+    "PYTHONPATH",
+    "RUNTASKS_HOME",
+    "SHELL",
+    "SHLVL",
+    "TERM",
+    "USER",
+    "_",
+}
+_PUBLIC_PROCESS_ENVIRONMENT_VALUES = {"false", "none", "null", "true"}
+_SENSITIVE_PROCESS_ENVIRONMENT_NAME = re.compile(
+    r"(?:API[_-]?KEY|AUTHORIZATION|CREDENTIAL|PASSCODE|PASSWORD|PIN|PRIVATE[_-]?KEY|SECRET|TOKEN)",
+    re.IGNORECASE,
+)
 
 
 class SecretConfigurationError(ValueError):
@@ -30,6 +50,29 @@ def load_secret_settings(
         }
     )
     return MappingProxyType(values)
+
+
+def environment_redaction_values(
+    environment: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    process_environment = os.environ if environment is None else environment
+    return tuple(
+        sorted(
+            {
+                value
+                for name, value in process_environment.items()
+                if value
+                and name not in _PUBLIC_PROCESS_ENVIRONMENT_NAMES
+                and (
+                    _SENSITIVE_PROCESS_ENVIRONMENT_NAME.search(name) is not None
+                    or value.casefold()
+                    not in _PUBLIC_PROCESS_ENVIRONMENT_VALUES
+                )
+            },
+            key=len,
+            reverse=True,
+        )
+    )
 
 
 def _load_secret_environment_file(path: Path) -> dict[str, str]:

@@ -10,7 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "RunTasks contributors" }]
-dependencies = ["tzdata==2026.3"]
+dependencies = [
+    "python-telegram-bot==22.8",
+    "tzdata==2026.3",
+]
 
 [project.scripts]
 runtasks = "runtasks.cli:main"
