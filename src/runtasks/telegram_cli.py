@@ -220,7 +220,12 @@ def _render_setup_result(
                 ],
                 "mode": "long-polling",
                 "status": status,
-            }
+            },
+            public_values=(
+                value
+                for candidate in candidates
+                for value in (candidate.user_id, candidate.chat_id)
+            ),
         )
         return
     error_output = status != "ok"
@@ -242,6 +247,7 @@ def _render_setup_result(
             f"Chat ID: {payload['chat_id']}  "
             f"Chat type: {candidate.chat_type}",
             error=error_output,
+            public_values=(candidate.user_id, candidate.chat_id),
         )
         if settings.has_authorization_configuration:
             verification = settings.verify_authorization(
@@ -257,13 +263,6 @@ def _candidate_payload(
 ) -> dict[str, object]:
     payload = candidate.as_dict()
     if settings.has_authorization_configuration:
-        configured_ids = set(settings.allowed_user_ids)
-        if settings.destination is not None:
-            configured_ids.add(settings.destination.chat_id)
-        if candidate.user_id in configured_ids:
-            payload["user_id"] = "[configured]"
-        if candidate.chat_id in configured_ids:
-            payload["chat_id"] = "[configured]"
         payload["verification"] = settings.verify_authorization(
             candidate.authorization_context
         ).as_dict()

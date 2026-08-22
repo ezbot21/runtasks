@@ -116,9 +116,9 @@ class TelegramCliTests(unittest.TestCase):
                             "chat_matches": True,
                             "user_allowed": True,
                         },
-                        "chat_id": "[configured]",
+                        "chat_id": 998877665,
                         "chat_type": "private",
-                        "user_id": "[configured]",
+                        "user_id": 998877665,
                     }
                 ],
                 "mode": "long-polling",
@@ -291,7 +291,7 @@ class TelegramCliTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(result.returncode, 2)
         self.assertEqual(payload["status"], "destination-invalid")
-        self.assertEqual(payload["candidates"][0]["chat_id"], "[configured]")
+        self.assertEqual(payload["candidates"][0]["chat_id"], -1002233445566)
 
     def test_init_never_stores_private_telegram_configuration_in_sqlite(self) -> None:
         configuration = {

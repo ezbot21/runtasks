@@ -87,6 +87,21 @@ class RedactionTests(unittest.TestCase):
         self.assertEqual(payload["one"], "[REDACTED]")
         self.assertEqual(payload["short"], "[REDACTED]")
         self.assertEqual(payload["value"], "[REDACTED]")
+
+        public_output = io.StringIO()
+        configure_cli_redactor(Redactor.from_secret_values(("123456",)))
+        try:
+            with redirect_stdout(public_output):
+                print_json(
+                    {"required_identifier": 123456},
+                    public_values=(123456,),
+                )
+        finally:
+            configure_cli_redactor(DEFAULT_REDACTOR)
+        self.assertEqual(
+            json.loads(public_output.getvalue())["required_identifier"],
+            123456,
+        )
         self.assertEqual(
             redact_text("proxy", sensitive_values=("xy",)),
             "proxy",
