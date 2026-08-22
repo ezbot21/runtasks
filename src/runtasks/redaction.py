@@ -15,6 +15,15 @@ _SENSITIVE_KEY = re.compile(
     r"(?:api[_-]?key|authorization|credential|password|private[_-]?key|secret|token)",
     re.IGNORECASE,
 )
+_SENSITIVE_PATH_LABEL = re.compile(
+    r"(?:api[_-]?key|authorization|credential|password|private[_-]?key|secret|token)",
+    re.IGNORECASE,
+)
+_SENSITIVE_PATH_ASSIGNMENT = re.compile(
+    r"(?P<label>api[_-]?key|authorization|credential|password|private[_-]?key|secret|token)"
+    r"(?P<separator>[=:_-]).+",
+    re.IGNORECASE,
+)
 _GENERIC_PATTERNS = (
     re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]{4,}", re.IGNORECASE),
     re.compile(
@@ -276,5 +285,33 @@ def _redact_url(match: re.Match[str]) -> str:
     )
     fragment = REDACTED if parsed.fragment else ""
     return urlunsplit(
-        (parsed.scheme, netloc, parsed.path, query, fragment)
+        (
+            parsed.scheme,
+            netloc,
+            _redact_url_path(parsed.path),
+            query,
+            fragment,
+        )
     )
+
+
+def _redact_url_path(path: str) -> str:
+    parts = path.split("/")
+    redact_next = False
+    for index, part in enumerate(parts):
+        if not part:
+            continue
+        if redact_next:
+            parts[index] = REDACTED
+            redact_next = False
+            continue
+        if _SENSITIVE_PATH_LABEL.fullmatch(part) is not None:
+            redact_next = True
+            continue
+        assignment = _SENSITIVE_PATH_ASSIGNMENT.fullmatch(part)
+        if assignment is not None:
+            parts[index] = (
+                f"{assignment.group('label')}"
+                f"{assignment.group('separator')}{REDACTED}"
+            )
+    return "/".join(parts)

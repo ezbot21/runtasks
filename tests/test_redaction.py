@@ -53,6 +53,7 @@ class RedactionTests(unittest.TestCase):
             f"ssh://user:credential@example.test/private/key "
             "http://example.test:bad/private/path "
             "https://docs.example.test/public/guide "
+            "https://files.example.test/password/path-secret-value "
             f"https://api.telegram.org/bot{TOKEN}/getUpdates"
         )
 
@@ -75,6 +76,8 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn("user:credential", redacted)
         self.assertNotIn(":bad", redacted)
         self.assertIn("https://docs.example.test/public/guide", redacted)
+        self.assertNotIn("path-secret-value", redacted)
+        self.assertIn("https://files.example.test/password/", redacted)
         self.assertIn("https://api.telegram.org/", redacted)
         self.assertIn("[REDACTED]", redacted)
 
