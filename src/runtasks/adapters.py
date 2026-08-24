@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Mapping, Protocol, cast
 
+from runtasks.pi_mcp_release_adapters import build_pi_release_checker
+from runtasks.pi_mcp_releases import PiMcpReleaseChecker
 from runtasks.redaction import Redactor
 
 
@@ -84,23 +86,37 @@ def normalize_external_outcome(
 
 
 class LocalInspectionAdapter:
-    def __init__(self, redactor: Redactor) -> None:
+    def __init__(
+        self,
+        redactor: Redactor,
+        checker: PiMcpReleaseChecker | None = None,
+    ) -> None:
         self._redactor = redactor
+        self._checker = build_pi_release_checker() if checker is None else checker
 
     def perform(self, request: ExternalRequest) -> ExternalOutcome:
         if request.operation != "pi_mcp_adapter.inspect":
             raise ExternalAdapterError("external operation is not registered")
+        raw_context = request.parameters.get("importance_context", {})
+        if not isinstance(raw_context, dict):
+            raise ExternalAdapterError("Pi MCP importance context is invalid")
+        result = self._checker.check(cast(dict[str, object], raw_context))
+        summaries = {
+            "no-change": (
+                "Pi MCP adapter already matches the latest stable release."
+            ),
+            "non-important": (
+                "Pi MCP adapter releases were confidently assessed as non-important."
+            ),
+            "decision-required": (
+                "Pi MCP adapter release evidence requires a human decision."
+            ),
+        }
         return normalize_external_outcome(
             {
-                "status": "failure",
-                "summary": "Pi MCP adapter inspection is not configured yet.",
-                "details": {
-                    "operation": "read-only-inspection",
-                    "validation": (
-                        "The bounded production adapter is unavailable; no external "
-                        "command was executed."
-                    ),
-                },
+                "status": "success",
+                "summary": summaries[result.outcome],
+                "details": result.as_dict(),
             },
             self._redactor,
         )
