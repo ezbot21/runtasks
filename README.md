@@ -227,10 +227,15 @@ transactional Decision transition: an approval can create only one claimed appro
 Run, while rejection creates no execution work. The production Pi MCP adapter handler
 supplies real read-only release assessments and immutable exact-version update plans.
 `run-due` executes a claimed approved plan at most once, records ordered redacted step
-outcomes, and exposes a successful Decision as `completed`. Validation failures are
-recorded as failed execution outcomes and are never mistaken for success. Automatic
-exact-version rollback and stale-plan supersession remain separate recovery work; the
-read-only check phase itself never performs mutation.
+outcomes, and exposes a successful Decision as `completed`. A stale old-version
+precondition supersedes the approved Decision before mutation and makes the Task due
+immediately so the normal read-only check creates a fresh assessment and Decision path.
+Failures before package mutation do not roll back. Failures after mutation reinstall the
+exact authorized old pin, restart and health-check Pi Web, and repeat the fresh
+`MCP_ADAPTER_OK` validation. Verified recovery is recorded as `rolled-back`; failed or
+ambiguous recovery is a distinct `rollback-failed` Decision outcome. Both recovery
+outcomes send durable urgent redacted notifications, and interrupted mutation or
+rollback phases are reconciled without repeating package installation.
 
 Initialization creates:
 

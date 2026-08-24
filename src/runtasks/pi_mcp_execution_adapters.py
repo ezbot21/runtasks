@@ -204,7 +204,7 @@ class TelegramExecutionNotificationAdapter:
             asyncio.run(client.send(text=text))
         except Exception:
             raise PiMcpExecutionAdapterError(
-                "success notification delivery failed"
+                "execution outcome notification delivery failed"
             ) from None
 
 
@@ -226,15 +226,24 @@ class FixturePackageAdapter:
     def __init__(
         self,
         versions: tuple[str, ...],
-        install_status: str,
+        install_steps: tuple[dict[object, object], ...],
         recorder: _FixtureRecorder,
+        shared_version_path: Path | None = None,
     ) -> None:
         self._versions = list(versions)
-        self._install_status = install_status
+        self._install_steps = list(install_steps)
+        self._shared_version_path = shared_version_path
         self._recorder = recorder
 
     def installed_version(self) -> str:
         self._recorder.record("package.installed-version")
+        if self._shared_version_path is not None:
+            try:
+                return self._shared_version_path.read_text(encoding="utf-8").strip()
+            except OSError as error:
+                raise PiMcpExecutionAdapterError(
+                    "fixture installed version is unavailable"
+                ) from error
         if not self._versions:
             raise PiMcpExecutionAdapterError(
                 "fixture installed version is unavailable"
@@ -243,38 +252,60 @@ class FixturePackageAdapter:
 
     def install_exact(self, version: str) -> None:
         self._recorder.record("package.install-exact", version=version)
-        if self._install_status != "success":
-            raise PiMcpExecutionAdapterError("fixture exact installation failed")
+        step = _next_fixture_step(self._install_steps, "install")
+        if _fixture_text(step, "status") != "success":
+            raise PiMcpExecutionAdapterError(
+                _fixture_error(step, "fixture exact installation failed")
+            )
+        if self._shared_version_path is not None:
+            self._shared_version_path.write_text(version, encoding="utf-8")
 
 
 class FixtureServiceAdapter:
-    def __init__(self, status: str, recorder: _FixtureRecorder) -> None:
-        self._status = status
+    def __init__(
+        self,
+        steps: tuple[dict[object, object], ...],
+        recorder: _FixtureRecorder,
+    ) -> None:
+        self._steps = list(steps)
         self._recorder = recorder
 
     def restart(self, service_name: str) -> None:
         self._recorder.record("service.restart", service=service_name)
-        if self._status != "success":
-            raise PiMcpExecutionAdapterError("fixture service restart failed")
+        step = _next_fixture_step(self._steps, "restart")
+        if _fixture_text(step, "status") != "success":
+            raise PiMcpExecutionAdapterError(
+                _fixture_error(step, "fixture service restart failed")
+            )
 
 
 class FixtureHealthAdapter:
-    def __init__(self, status: str, result: str, recorder: _FixtureRecorder) -> None:
-        self._status = status
-        self._result = result
+    def __init__(
+        self,
+        steps: tuple[dict[object, object], ...],
+        recorder: _FixtureRecorder,
+    ) -> None:
+        self._steps = list(steps)
         self._recorder = recorder
 
     def check(self, service_name: str) -> str:
         self._recorder.record("health.check", service=service_name)
-        if self._status != "success" or self._result != "healthy":
-            raise PiMcpExecutionAdapterError("fixture health check failed")
-        return self._result
+        step = _next_fixture_step(self._steps, "health")
+        result = _fixture_text(step, "result")
+        if _fixture_text(step, "status") != "success" or result != "healthy":
+            raise PiMcpExecutionAdapterError(
+                _fixture_error(step, "fixture health check failed")
+            )
+        return result
 
 
 class FixturePiValidationAdapter:
-    def __init__(self, status: str, result: str, recorder: _FixtureRecorder) -> None:
-        self._status = status
-        self._result = result
+    def __init__(
+        self,
+        steps: tuple[dict[object, object], ...],
+        recorder: _FixtureRecorder,
+    ) -> None:
+        self._steps = list(steps)
         self._recorder = recorder
 
     def validate_mcp(self, expected_result: str) -> str:
@@ -282,9 +313,13 @@ class FixturePiValidationAdapter:
             "pi.validate-mcp",
             expected_result=expected_result,
         )
-        if self._status != "success" or self._result != expected_result:
-            raise PiMcpExecutionAdapterError("fixture Pi validation failed")
-        return self._result
+        step = _next_fixture_step(self._steps, "pi_validation")
+        result = _fixture_text(step, "result")
+        if _fixture_text(step, "status") != "success" or result != expected_result:
+            raise PiMcpExecutionAdapterError(
+                _fixture_error(step, "fixture Pi validation failed")
+            )
+        return result
 
 
 class FixtureExecutionNotificationAdapter:
@@ -318,6 +353,7 @@ def build_pi_mcp_execution_adapters(
                 cwd=agent_dir,
             ),
             notification=TelegramExecutionNotificationAdapter(settings),
+            lock_path=agent_dir / ".runtasks-pi-mcp-execution.lock",
         )
     if adapter_name != "fixture":
         raise PiMcpExecutionError(
@@ -340,43 +376,47 @@ def build_pi_mcp_execution_adapters(
         isinstance(version, str) for version in versions
     ):
         raise PiMcpExecutionError("fixture installed versions are invalid")
-    install = _fixture_mapping(fixture, "install")
-    restart = _fixture_mapping(fixture, "restart")
-    health = _fixture_mapping(fixture, "health")
-    validation = _fixture_mapping(fixture, "pi_validation")
+    install = _fixture_steps(fixture, "install")
+    restart = _fixture_steps(fixture, "restart")
+    health = _fixture_steps(fixture, "health")
+    validation = _fixture_steps(fixture, "pi_validation")
     notification = _fixture_mapping(fixture, "notification")
-    recorder = _FixtureRecorder(
-        (
-            None
-            if settings.get("RUNTASKS_FIXTURE_PI_MCP_EXECUTION_LOG") is None
-            else Path(settings["RUNTASKS_FIXTURE_PI_MCP_EXECUTION_LOG"])
-        ),
-        redactor,
+    raw_log_path = settings.get("RUNTASKS_FIXTURE_PI_MCP_EXECUTION_LOG")
+    log_path = None if raw_log_path is None else Path(raw_log_path)
+    raw_lock_path = settings.get("RUNTASKS_FIXTURE_PI_MCP_EXECUTION_LOCK")
+    lock_path = (
+        Path(raw_lock_path)
+        if raw_lock_path is not None
+        else (
+            Path.cwd() / ".runtasks-fixture-pi-mcp-execution.lock"
+            if log_path is None
+            else log_path.with_name(f"{log_path.name}.lock")
+        )
+    )
+    recorder = _FixtureRecorder(log_path, redactor)
+    raw_shared_version_path = settings.get(
+        "RUNTASKS_FIXTURE_PI_MCP_SHARED_VERSION_PATH"
+    )
+    shared_version_path = (
+        None
+        if raw_shared_version_path is None
+        else Path(raw_shared_version_path)
     )
     return PiMcpExecutionAdapters(
         package=FixturePackageAdapter(
             cast(tuple[str, ...], tuple(versions)),
-            _fixture_text(install, "status"),
+            install,
             recorder,
+            shared_version_path,
         ),
-        service=FixtureServiceAdapter(
-            _fixture_text(restart, "status"),
-            recorder,
-        ),
-        health=FixtureHealthAdapter(
-            _fixture_text(health, "status"),
-            _fixture_text(health, "result"),
-            recorder,
-        ),
-        mcp_validation=FixturePiValidationAdapter(
-            _fixture_text(validation, "status"),
-            _fixture_text(validation, "result"),
-            recorder,
-        ),
+        service=FixtureServiceAdapter(restart, recorder),
+        health=FixtureHealthAdapter(health, recorder),
+        mcp_validation=FixturePiValidationAdapter(validation, recorder),
         notification=FixtureExecutionNotificationAdapter(
             _fixture_text(notification, "status"),
             recorder,
         ),
+        lock_path=lock_path,
     )
 
 
@@ -400,6 +440,41 @@ def _run_process(
 
 def _is_exact_line(value: str, expected: str) -> bool:
     return value == expected or value == f"{expected}\n"
+
+
+def _fixture_steps(
+    fixture: Mapping[object, object],
+    name: str,
+) -> tuple[dict[object, object], ...]:
+    value = fixture.get(name)
+    if isinstance(value, list):
+        steps: list[dict[object, object]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise PiMcpExecutionError(f"fixture {name} settings are invalid")
+            steps.append(cast(dict[object, object], item))
+        if not steps:
+            raise PiMcpExecutionError(f"fixture {name} settings are invalid")
+        return tuple(steps)
+    return (_fixture_mapping(fixture, name),)
+
+
+def _next_fixture_step(
+    steps: list[dict[object, object]],
+    name: str,
+) -> dict[object, object]:
+    if not steps:
+        raise PiMcpExecutionAdapterError(
+            f"fixture {name} step is unavailable"
+        )
+    if len(steps) == 1:
+        return steps[0]
+    return steps.pop(0)
+
+
+def _fixture_error(value: Mapping[object, object], default: str) -> str:
+    error = value.get("error")
+    return error if isinstance(error, str) and error else default
 
 
 def _fixture_mapping(

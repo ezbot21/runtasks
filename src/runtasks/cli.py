@@ -557,7 +557,10 @@ def _run_due(
             _print_run(run)
     return (
         EXIT_EXECUTION_ERROR
-        if any(run.status == "failed" for run in result.runs)
+        if any(
+            run.status in {"failed", "rolled-back"}
+            for run in result.runs
+        )
         else 0
     )
 

@@ -9,6 +9,7 @@ from runtasks.handlers import HandlerRegistry
 from runtasks.pi_mcp_execution import (
     PiMcpExecutionAdapters,
     execute_approved_pi_mcp_runs,
+    pi_mcp_execution_guard,
 )
 from runtasks.redaction import Redactor
 from runtasks.runs import (
@@ -72,11 +73,36 @@ def run_due_tasks(
 ) -> SchedulerResult:
     current_datetime = _require_aware(clock.now()).astimezone(timezone.utc)
     current_time = _canonical_timestamp(current_datetime)
+    with pi_mcp_execution_guard(approval_adapters.lock_path) as acquired:
+        if not acquired:
+            return SchedulerResult(current_time=current_time, runs=())
+        return _run_due_tasks_with_execution_lock(
+            path,
+            clock,
+            current_time,
+            external_adapter,
+            handler_registry,
+            approval_adapters,
+            redactor,
+        )
+
+
+def _run_due_tasks_with_execution_lock(
+    path: Path,
+    clock: Clock,
+    current_time: str,
+    external_adapter: ExternalAdapter,
+    handler_registry: HandlerRegistry,
+    approval_adapters: PiMcpExecutionAdapters,
+    redactor: Redactor,
+) -> SchedulerResult:
     approval_runs = execute_approved_pi_mcp_runs(
         path,
         approval_adapters,
         redactor,
         lambda: _clock_timestamp(clock),
+        fresh_check_at=current_time,
+        execution_lock_held=True,
     )
     claimed: list[ScheduledClaim] = []
 

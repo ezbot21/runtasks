@@ -17,7 +17,16 @@ from runtasks.tasks import Task
 
 
 DECISION_STATUSES = frozenset(
-    {"pending", "approved", "rejected", "completed", "failed"}
+    {
+        "pending",
+        "approved",
+        "rejected",
+        "completed",
+        "failed",
+        "superseded",
+        "rolled-back",
+        "rollback-failed",
+    }
 )
 _RESPONSE_TARGETS = {"approve": "approved", "reject": "rejected"}
 _NOTIFICATION_SELECT_COLUMNS = """
@@ -29,7 +38,14 @@ _NOTIFICATION_SELECT_COLUMNS = """
 """
 _EXECUTION_SELECT_COLUMNS = """
     execution.status AS execution_status,
-    execution.completed_at AS execution_completed_at
+    execution.summary AS execution_summary,
+    execution.details_json AS execution_details_json,
+    execution.completed_at AS execution_completed_at,
+    execution.notification_status AS execution_notification_status,
+    execution.notification_attempts AS execution_notification_attempts,
+    execution.notification_last_attempt_at AS execution_notification_last_attempt_at,
+    execution.notification_last_error AS execution_notification_last_error,
+    execution.notification_delivered_at AS execution_notification_delivered_at
 """
 
 
@@ -82,6 +98,24 @@ class DecisionNotificationDelivery:
 
 
 @dataclass(frozen=True)
+class DecisionExecutionOutcome:
+    status: str
+    summary: str
+    details: dict[str, object]
+    completed_at: str
+    notification_delivery: DecisionNotificationDelivery
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "completed_at": self.completed_at,
+            "details": self.details,
+            "notification_delivery": self.notification_delivery.as_dict(),
+            "status": self.status,
+            "summary": self.summary,
+        }
+
+
+@dataclass(frozen=True)
 class Decision:
     id: str
     task_id: str
@@ -93,6 +127,7 @@ class Decision:
     validation_summary: str
     rollback_summary: str
     notification_delivery: DecisionNotificationDelivery
+    execution: DecisionExecutionOutcome | None
     response: DecisionResponse | None
     approval_run_id: str | None
     execution_scheduled_at: str | None
@@ -104,6 +139,7 @@ class Decision:
             "approval_run_id": self.approval_run_id,
             "created_at": self.created_at,
             "execution_scheduled_at": self.execution_scheduled_at,
+            "execution": None if self.execution is None else self.execution.as_dict(),
             "id": self.id,
             "notification_delivery": self.notification_delivery.as_dict(),
             "plan": self.plan,
@@ -449,19 +485,31 @@ def search_decisions(path: Path, query: str) -> list[Decision]:
         with _decision_connection(path) as connection:
             rows = connection.execute(
                 f"""
+                WITH matches AS (
+                    SELECT decision_id, bm25(decision_fts) AS relevance
+                    FROM decision_fts
+                    WHERE decision_fts MATCH ?
+                    UNION ALL
+                    SELECT decision_id, bm25(decision_execution_fts) AS relevance
+                    FROM decision_execution_fts
+                    WHERE decision_execution_fts MATCH ?
+                ), ranked AS (
+                    SELECT decision_id, MIN(relevance) AS relevance
+                    FROM matches
+                    GROUP BY decision_id
+                )
                 SELECT decisions.*,
                        {_NOTIFICATION_SELECT_COLUMNS},
                        {_EXECUTION_SELECT_COLUMNS}
-                FROM decision_fts
-                JOIN decisions ON decisions.id = decision_fts.decision_id
+                FROM ranked
+                JOIN decisions ON decisions.id = ranked.decision_id
                 JOIN decision_notification_deliveries AS notification
                   ON notification.decision_id = decisions.id
                 LEFT JOIN decision_execution_outcomes AS execution
                   ON execution.decision_id = decisions.id
-                WHERE decision_fts MATCH ?
-                ORDER BY bm25(decision_fts), decisions.created_at DESC
+                ORDER BY ranked.relevance, decisions.created_at DESC
                 """,
-                (fts_query,),
+                (fts_query, fts_query),
             ).fetchall()
     except sqlite3.OperationalError as error:
         raise DecisionError("Decision search failed") from error
@@ -544,6 +592,42 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
             else str(row["notification_delivered_at"])
         ),
     )
+    execution: DecisionExecutionOutcome | None = None
+    if execution_status is not None:
+        try:
+            execution_details_value: object = json.loads(
+                str(row["execution_details_json"])
+            )
+        except json.JSONDecodeError as error:
+            raise DecisionError("stored Decision execution details are invalid") from error
+        if not isinstance(execution_details_value, dict):
+            raise DecisionError("stored Decision execution details are invalid")
+        execution_notification = DecisionNotificationDelivery(
+            status=str(row["execution_notification_status"]),
+            attempts=int(row["execution_notification_attempts"]),
+            last_attempt_at=(
+                None
+                if row["execution_notification_last_attempt_at"] is None
+                else str(row["execution_notification_last_attempt_at"])
+            ),
+            last_error=(
+                None
+                if row["execution_notification_last_error"] is None
+                else str(row["execution_notification_last_error"])
+            ),
+            delivered_at=(
+                None
+                if row["execution_notification_delivered_at"] is None
+                else str(row["execution_notification_delivered_at"])
+            ),
+        )
+        execution = DecisionExecutionOutcome(
+            status=str(execution_status),
+            summary=str(row["execution_summary"]),
+            details=cast(dict[str, object], execution_details_value),
+            completed_at=str(row["execution_completed_at"]),
+            notification_delivery=execution_notification,
+        )
     return Decision(
         id=str(row["id"]),
         task_id=str(row["task_id"]),
@@ -555,6 +639,7 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
         validation_summary=str(row["validation_summary"]),
         rollback_summary=str(row["rollback_summary"]),
         notification_delivery=notification,
+        execution=execution,
         response=response,
         approval_run_id=(
             None if row["approval_run_id"] is None else str(row["approval_run_id"])

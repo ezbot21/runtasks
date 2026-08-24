@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any, Iterator
 
 
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 BUSY_TIMEOUT_MS = 5_000
 
 
@@ -113,6 +113,9 @@ def _apply_migrations(connection: sqlite3.Connection) -> bool:
         if current_version < 8:
             _create_decision_execution_outcomes(connection)
             _record_migration(connection, 8)
+        if current_version < 9:
+            _migrate_pi_mcp_recovery_and_execution_history(connection)
+            _record_migration(connection, 9)
         connection.commit()
     except Exception:
         connection.rollback()
@@ -601,6 +604,185 @@ def _create_decision_execution_outcomes(
         """
         CREATE INDEX decision_execution_status_idx
         ON decision_execution_outcomes(status, completed_at DESC)
+        """
+    )
+
+
+def _migrate_pi_mcp_recovery_and_execution_history(
+    connection: sqlite3.Connection,
+) -> None:
+    running = connection.execute(
+        """
+        SELECT 1
+        FROM runs
+        JOIN tasks ON tasks.id = runs.task_id
+        WHERE runs.trigger = 'approval'
+          AND runs.status = 'running'
+          AND tasks.handler = 'pi_mcp_adapter'
+        LIMIT 1
+        """
+    ).fetchone()
+    if running is not None:
+        raise DatabaseError(
+            "cannot migrate while a legacy Pi MCP approval Run is still running"
+        )
+    connection.execute(
+        """
+        CREATE TABLE pi_mcp_execution_recovery (
+            decision_id TEXT PRIMARY KEY REFERENCES decisions(id),
+            approval_run_id TEXT NOT NULL UNIQUE REFERENCES runs(id),
+            phase TEXT NOT NULL CHECK (
+                phase IN (
+                    'execution-started', 'target-install-started',
+                    'target-installed', 'rollback-required',
+                    'rollback-install-started', 'rollback-installed'
+                )
+            ),
+            failed_step TEXT,
+            failure_summary TEXT,
+            pending_outcome_json TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "ALTER TABLE decision_execution_outcomes RENAME TO decision_execution_outcomes_v8"
+    )
+    connection.execute(
+        """
+        CREATE TABLE decision_execution_outcomes (
+            decision_id TEXT PRIMARY KEY REFERENCES decisions(id),
+            approval_run_id TEXT NOT NULL UNIQUE REFERENCES runs(id),
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'completed', 'failed', 'superseded',
+                    'rolled-back', 'rollback-failed'
+                )
+            ),
+            summary TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            notification_status TEXT NOT NULL CHECK (
+                notification_status IN (
+                    'not-required', 'pending', 'sending',
+                    'retryable-failure', 'delivered'
+                )
+            ),
+            notification_attempts INTEGER NOT NULL CHECK (
+                notification_attempts >= 0
+            ),
+            notification_claimed_at TEXT,
+            notification_last_attempt_at TEXT,
+            notification_last_error TEXT,
+            notification_delivered_at TEXT,
+            CHECK (
+                (notification_status = 'not-required'
+                 AND notification_attempts = 0
+                 AND notification_claimed_at IS NULL
+                 AND notification_last_attempt_at IS NULL
+                 AND notification_last_error IS NULL
+                 AND notification_delivered_at IS NULL)
+                OR
+                (notification_status = 'pending'
+                 AND notification_attempts = 0
+                 AND notification_claimed_at IS NULL
+                 AND notification_last_attempt_at IS NULL
+                 AND notification_last_error IS NULL
+                 AND notification_delivered_at IS NULL)
+                OR
+                (notification_status = 'sending'
+                 AND notification_claimed_at IS NOT NULL
+                 AND notification_delivered_at IS NULL)
+                OR
+                (notification_status = 'retryable-failure'
+                 AND notification_attempts > 0
+                 AND notification_claimed_at IS NULL
+                 AND notification_last_attempt_at IS NOT NULL
+                 AND notification_last_error IS NOT NULL
+                 AND notification_delivered_at IS NULL)
+                OR
+                (notification_status = 'delivered'
+                 AND notification_attempts > 0
+                 AND notification_claimed_at IS NULL
+                 AND notification_last_attempt_at IS NOT NULL
+                 AND notification_last_error IS NULL
+                 AND notification_delivered_at IS NOT NULL)
+            ),
+            CHECK (
+                (status IN ('completed', 'rolled-back', 'rollback-failed')
+                 AND notification_status != 'not-required')
+                OR
+                (status IN ('failed', 'superseded')
+                 AND notification_status = 'not-required')
+            )
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO decision_execution_outcomes(
+            decision_id, approval_run_id, status, summary, details_json,
+            completed_at, notification_status, notification_attempts,
+            notification_claimed_at, notification_last_attempt_at,
+            notification_last_error, notification_delivered_at
+        )
+        SELECT decision_id, approval_run_id, status, summary, details_json,
+               completed_at, notification_status, notification_attempts,
+               notification_claimed_at, notification_last_attempt_at,
+               notification_last_error, notification_delivered_at
+        FROM decision_execution_outcomes_v8
+        """
+    )
+    connection.execute("DROP TABLE decision_execution_outcomes_v8")
+    connection.execute(
+        """
+        CREATE INDEX decision_execution_status_idx
+        ON decision_execution_outcomes(status, completed_at DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE VIRTUAL TABLE decision_execution_fts USING fts5(
+            decision_id UNINDEXED,
+            summary,
+            details
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO decision_execution_fts(decision_id, summary, details)
+        SELECT decision_id, summary, details_json
+        FROM decision_execution_outcomes
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER decision_execution_fts_insert
+        AFTER INSERT ON decision_execution_outcomes BEGIN
+            INSERT INTO decision_execution_fts(decision_id, summary, details)
+            VALUES (new.decision_id, new.summary, new.details_json);
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER decision_execution_fts_update
+        AFTER UPDATE ON decision_execution_outcomes BEGIN
+            DELETE FROM decision_execution_fts
+            WHERE decision_id = old.decision_id;
+            INSERT INTO decision_execution_fts(decision_id, summary, details)
+            VALUES (new.decision_id, new.summary, new.details_json);
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER decision_execution_fts_delete
+        AFTER DELETE ON decision_execution_outcomes BEGIN
+            DELETE FROM decision_execution_fts
+            WHERE decision_id = old.decision_id;
+        END
         """
     )
 
