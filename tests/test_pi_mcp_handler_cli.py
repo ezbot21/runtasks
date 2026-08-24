@@ -124,7 +124,7 @@ class PiMcpHandlerCliTests(unittest.TestCase):
                             "source": "changelog",
                             "title": "3.0.0",
                             "body": "Documentation and refactoring only.",
-                            "reference": "https://example.invalid/changelog#300",
+                            "reference": "https://example.invalid/releases/security-fix",
                         }
                     ],
                 }
@@ -178,6 +178,13 @@ class PiMcpHandlerCliTests(unittest.TestCase):
                     },
                     "evidence": evidence,
                     "source_failures": [],
+                    "source_references": [
+                        {
+                            "source": "changelog",
+                            "reference": "https://example.invalid/changelog",
+                            "reference_fingerprint": "release-source-fingerprint",
+                        }
+                    ],
                 },
                 request_log,
             )
@@ -195,10 +202,252 @@ class PiMcpHandlerCliTests(unittest.TestCase):
             decisions = json.loads(decisions_after.stdout)["decisions"]
             self.assertEqual(len(decisions), 1)
             plan = decisions[0]["plan"]
+            self.assertEqual(plan["handler"], "pi_mcp_adapter")
+            self.assertEqual(plan["operation"], "install-exact-version")
+            self.assertEqual(plan["parameters"]["task_id"], task["id"])
+            self.assertEqual(
+                plan["parameters"]["run_id"],
+                json.loads(second.stdout)["run"]["id"],
+            )
             self.assertEqual(plan["parameters"]["installed_version"], "2.26.1")
             self.assertEqual(plan["parameters"]["target_version"], "2.26.2")
+            self.assertEqual(plan["assessment"]["category"], "security")
+            self.assertEqual(plan["assessment"]["confidence"], "high")
+            self.assertEqual(
+                plan["assessment"]["reason"],
+                "Patch release fixes a relevant security defect.",
+            )
+            self.assertEqual(
+                plan["evidence"]["releases"][0]["sources"][0]["reference"],
+                "https://example.invalid/releases/security-fix",
+            )
+            self.assertEqual(
+                plan["evidence"]["source_references"][0]["reference"],
+                "https://example.invalid/changelog",
+            )
             self.assertEqual(plan["rollback"]["target_version"], "2.26.1")
             self.assertEqual(plan["validation"]["expected_mcp_result"], "MCP_ADAPTER_OK")
+
+    def test_every_important_category_creates_one_pending_exact_plan(self) -> None:
+        categories = (
+            "security",
+            "credential-oauth",
+            "pi-compatibility",
+            "active-server-breakage",
+            "protocol-connection",
+            "approval-output-safety",
+            "serious-operational-defect",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "runtime-home"
+            request_log = Path(directory) / "requests.jsonl"
+            self.initialize(home)
+            task = self.add_task(home, next_run_at="2026-09-01T01:00:00Z")
+
+            run_ids: set[str] = set()
+            for category in categories:
+                evidence_reference = f"https://example.invalid/releases/{category}"
+                confidence = "low" if category == "security" else "high"
+                environment = self.adapter_environment(
+                    {
+                        "contract": "pi-mcp-release-check/v1",
+                        "outcome": "decision-required",
+                        "installed_version": "2.26.1",
+                        "available_version": "2.27.0",
+                        "assessment": {
+                            "importance": "important",
+                            "category": category,
+                            "reason": f"The {category} change affects this installation.",
+                            "recommendation": "Update after approval.",
+                            "confidence": confidence,
+                        },
+                        "evidence": [
+                            {
+                                "version": "2.27.0",
+                                "sources": [
+                                    {
+                                        "source": "changelog",
+                                        "title": "2.27.0",
+                                        "body": f"Relevant {category} correction.",
+                                        "reference": evidence_reference,
+                                    }
+                                ],
+                            }
+                        ],
+                        "source_failures": [],
+                    },
+                    request_log,
+                )
+
+                executed = run_cli(
+                    home,
+                    "run",
+                    str(task["id"]),
+                    "--json",
+                    extra_environment=environment,
+                )
+                self.assertEqual(executed.returncode, 0, executed.stderr)
+                run = json.loads(executed.stdout)["run"]
+                self.assertEqual(run["status"], "decision-required")
+                self.assertFalse(run["details"]["mutation_performed"])
+                run_ids.add(str(run["id"]))
+
+            decisions = json.loads(
+                run_cli(home, "decisions", "--json").stdout
+            )["decisions"]
+            self.assertEqual(len(decisions), len(categories))
+            self.assertEqual(
+                {decision["plan"]["assessment"]["category"] for decision in decisions},
+                set(categories),
+            )
+            for decision in decisions:
+                plan = decision["plan"]
+                self.assertEqual(decision["status"], "pending")
+                self.assertEqual(plan["parameters"]["task_id"], task["id"])
+                self.assertIn(plan["parameters"]["run_id"], run_ids)
+                self.assertEqual(plan["parameters"]["installed_version"], "2.26.1")
+                self.assertEqual(plan["parameters"]["target_version"], "2.27.0")
+                expected_confidence = (
+                    "low"
+                    if plan["assessment"]["category"] == "security"
+                    else "high"
+                )
+                self.assertEqual(
+                    plan["assessment"]["confidence"], expected_confidence
+                )
+                self.assertEqual(plan["rollback"]["target_version"], "2.26.1")
+
+    def test_rejecting_an_important_update_closes_it_without_external_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "runtime-home"
+            request_log = Path(directory) / "requests.jsonl"
+            self.initialize(home)
+            task = self.add_task(home, next_run_at="2026-09-01T01:00:00Z")
+            environment = self.adapter_environment(
+                {
+                    "contract": "pi-mcp-release-check/v1",
+                    "outcome": "decision-required",
+                    "installed_version": "2.26.1",
+                    "available_version": "2.26.2",
+                    "assessment": {
+                        "importance": "important",
+                        "category": "security",
+                        "reason": "A security fix affects this installation.",
+                        "recommendation": "Update after approval.",
+                        "confidence": "high",
+                    },
+                    "evidence": [
+                        {
+                            "version": "2.26.2",
+                            "sources": [
+                                {
+                                    "source": "changelog",
+                                    "title": "2.26.2",
+                                    "body": "Security correction.",
+                                    "reference": "https://example.invalid/releases/2.26.2",
+                                }
+                            ],
+                        }
+                    ],
+                    "source_failures": [],
+                },
+                request_log,
+            )
+
+            checked = run_cli(
+                home,
+                "run",
+                str(task["id"]),
+                "--json",
+                extra_environment=environment,
+            )
+            decision = json.loads(run_cli(home, "decisions", "--json").stdout)[
+                "decisions"
+            ][0]
+            rejected = run_cli(
+                home,
+                "decision",
+                "reject",
+                str(decision["id"]),
+                "--json",
+            )
+            history = json.loads(
+                run_cli(home, "history", str(task["id"]), "--json").stdout
+            )["runs"]
+
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            self.assertEqual(rejected.returncode, 0, rejected.stderr)
+            rejected_decision = json.loads(rejected.stdout)["decision"]
+            self.assertEqual(rejected_decision["status"], "rejected")
+            self.assertIsNone(rejected_decision["approval_run_id"])
+            self.assertEqual(len(history), 1)
+            self.assertFalse(history[0]["details"]["mutation_performed"])
+            requests = [
+                json.loads(line)
+                for line in request_log.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(
+                [request["operation"] for request in requests],
+                ["pi_mcp_adapter.inspect"],
+            )
+
+    def test_retried_scheduled_assessment_creates_only_one_pending_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "runtime-home"
+            request_log = Path(directory) / "requests.jsonl"
+            self.initialize(home)
+            self.add_task(home, next_run_at="2026-09-01T01:00:00Z")
+            environment = self.adapter_environment(
+                {
+                    "contract": "pi-mcp-release-check/v1",
+                    "outcome": "decision-required",
+                    "installed_version": "2.26.1",
+                    "available_version": "2.26.2",
+                    "assessment": {
+                        "importance": "uncertain",
+                        "category": "uncertain",
+                        "reason": "Release evidence is incomplete.",
+                        "recommendation": "Review manually.",
+                        "confidence": "low",
+                    },
+                    "evidence": [],
+                    "source_failures": ["changelog:missing:2.26.2"],
+                },
+                request_log,
+            )
+
+            first = run_cli(
+                home,
+                "run-due",
+                "--now",
+                "2026-09-01T01:00:00Z",
+                "--json",
+                extra_environment=environment,
+            )
+            retry = run_cli(
+                home,
+                "run-due",
+                "--now",
+                "2026-09-01T01:00:00Z",
+                "--json",
+                extra_environment=environment,
+            )
+            decisions = json.loads(run_cli(home, "decisions", "--json").stdout)[
+                "decisions"
+            ]
+
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(retry.returncode, 0, retry.stderr)
+            first_run = json.loads(first.stdout)["runs"][0]
+            self.assertEqual(first_run["status"], "decision-required")
+            self.assertEqual(json.loads(retry.stdout)["runs"], [])
+            self.assertEqual(len(decisions), 1)
+            self.assertEqual(decisions[0]["run_id"], first_run["id"])
+            self.assertEqual(decisions[0]["status"], "pending")
+            self.assertEqual(
+                len(request_log.read_text(encoding="utf-8").splitlines()),
+                1,
+            )
 
 
 if __name__ == "__main__":

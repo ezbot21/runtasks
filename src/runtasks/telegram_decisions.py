@@ -25,7 +25,10 @@ from runtasks.one_shot import OneShotRunTrigger, OneShotRunTriggerError
 from runtasks.redaction import Redactor
 from runtasks.tasks import get_task
 from runtasks.telegram_config import TelegramSettings
-from runtasks.telegram_errors import TelegramConfigurationError
+from runtasks.telegram_errors import (
+    TelegramConfigurationError,
+    TelegramDeliveryError,
+)
 from runtasks.telegram_updates import (
     TelegramCallbackRecord,
     TelegramUpdateRecord,
@@ -36,6 +39,7 @@ from runtasks.telegram_updates import (
 
 _CALLBACK_PREFIX = "rt1"
 _CALLBACK_PATTERN = re.compile(r"rt1:(?P<reference>[0-9a-f]{24}):(?P<action>[ard])\Z")
+_TELEGRAM_TEXT_LIMIT_UTF16_UNITS = 3_800
 class TelegramDecisionAction(Enum):
     APPROVE = "a"
     REJECT = "r"
@@ -266,9 +270,18 @@ async def _handle_callback(
         )
         return
     task = get_task(database_path, decision.task_id, include_removed=True)
+    detail_chunks = _telegram_text_chunks(
+        redactor.text(_decision_details(decision, task.name))
+    )
+    for chunk in detail_chunks[:-1]:
+        await client.send_message(
+            destination=context.chat_id,
+            text=chunk,
+            thread_id=thread_id,
+        )
     message_id = await client.send_interactive_message(
         destination=context.chat_id,
-        text=redactor.text(_decision_details(decision, task.name)),
+        text=detail_chunks[-1],
         buttons=_decision_buttons(decision.id),
         thread_id=thread_id,
     )
@@ -431,12 +444,16 @@ async def _send_unmapped_pending_decisions(
         ):
             continue
         task = get_task(database_path, decision.task_id, include_removed=True)
-        message_id = await client.send_interactive_message(
-            destination=chat_id,
-            text=redactor.text(_decision_summary(decision, task.name)),
-            buttons=_decision_buttons(decision.id),
-            thread_id=thread_id,
-        )
+        try:
+            message_id = await client.send_interactive_message(
+                destination=chat_id,
+                text=redactor.text(_decision_summary(decision, task.name)),
+                buttons=_decision_buttons(decision.id),
+                thread_id=thread_id,
+            )
+        except TelegramDeliveryError:
+            _record_notification_failure(database_path, decision.id)
+            continue
         _record_message(
             database_path,
             decision.id,
@@ -517,18 +534,24 @@ def _decision_reference(decision_id: str) -> str:
 def _decision_summary(decision: Decision, task_name: str) -> str:
     operation, handler = _plan_operation(decision)
     parameters = decision.plan.get("parameters", {})
+    installed_version, proposed_version = _plan_versions(parameters)
+    category, confidence = _assessment_labels(decision.plan.get("assessment"))
     parameter_lines = _summary_parameter_lines(parameters)
     return "\n".join(
         (
             "RunTasks needs your decision",
             "",
             f"Task: {task_name}",
-            f"Reason: {decision.reason}",
+            f"Installed version: {installed_version}",
+            f"Proposed stable version: {proposed_version}",
+            f"Category: {category}",
+            f"Confidence: {confidence}",
+            f"Reason: {_concise_text(decision.reason)}",
             "",
-            "Proposed operation:",
+            "Exact operation:",
             f"{operation} via {handler}",
             "",
-            "Parameters:",
+            "Procedure:",
             *parameter_lines,
             "",
             "Validation:",
@@ -582,23 +605,32 @@ def _rejection_message(task_name: str) -> str:
 
 def _decision_details(decision: Decision, task_name: str) -> str:
     operation, handler = _plan_operation(decision)
+    parameters = decision.plan.get("parameters", {})
+    installed_version, proposed_version = _plan_versions(parameters)
     return "\n".join(
         (
             "RunTasks Decision details",
             "",
             f"Task: {task_name}",
+            f"Task ID: {decision.task_id}",
+            f"Run ID: {decision.run_id}",
+            f"Installed version: {installed_version}",
+            f"Proposed stable version: {proposed_version}",
             f"Reason: {decision.reason}",
             "",
             "Plan hash:",
             decision.plan_hash,
             "",
-            "Operation:",
+            "Assessment:",
+            _pretty_json(decision.plan.get("assessment", {})),
+            "",
+            "Exact operation:",
             f"{operation} via {handler}",
             "",
-            "Parameters:",
-            _pretty_json(decision.plan.get("parameters", {})),
+            "Procedure:",
+            _pretty_json(parameters),
             "",
-            "Evidence:",
+            "Intervening-release evidence:",
             _pretty_json(decision.plan.get("evidence", {})),
             "",
             "Validation summary:",
@@ -612,6 +644,8 @@ def _decision_details(decision: Decision, task_name: str) -> str:
             "",
             "Rollback plan:",
             _pretty_json(decision.plan.get("rollback", {})),
+            "",
+            "Choose 1. APPROVE, 2. REJECT, or 3. DETAILS below.",
         )
     )
 
@@ -621,6 +655,55 @@ def _plan_operation(decision: Decision) -> tuple[str, str]:
         str(decision.plan.get("operation", "unknown-operation")),
         str(decision.plan.get("handler", "unknown-handler")),
     )
+
+
+def _plan_versions(parameters: object) -> tuple[str, str]:
+    if not isinstance(parameters, dict):
+        return ("unavailable", "unavailable")
+    installed = parameters.get("installed_version")
+    proposed = parameters.get("target_version", parameters.get("available_version"))
+    return (_display_value(installed), _display_value(proposed))
+
+
+def _assessment_labels(value: object) -> tuple[str, str]:
+    if not isinstance(value, dict):
+        return ("unavailable", "unavailable")
+    return (
+        _display_value(value.get("category")),
+        _display_value(value.get("confidence")),
+    )
+
+
+def _display_value(value: object) -> str:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return "unavailable"
+
+
+def _concise_text(value: str, *, limit: int = 600) -> str:
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "…"
+
+
+def _telegram_text_chunks(value: str) -> tuple[str, ...]:
+    chunks: list[str] = []
+    current: list[str] = []
+    current_units = 0
+    for character in value:
+        character_units = 2 if ord(character) > 0xFFFF else 1
+        if current and (
+            current_units + character_units > _TELEGRAM_TEXT_LIMIT_UTF16_UNITS
+        ):
+            chunks.append("".join(current))
+            current = []
+            current_units = 0
+        current.append(character)
+        current_units += character_units
+    if current or not chunks:
+        chunks.append("".join(current))
+    return tuple(chunks)
 
 
 def _pretty_json(value: object) -> str:
@@ -680,10 +763,53 @@ def _record_message(
                 """,
                 (decision_id, chat_id, message_id, message_kind, sent_at),
             )
+            if message_kind == "decision":
+                cursor = connection.execute(
+                    """
+                    UPDATE decision_notification_deliveries SET
+                        status = 'delivered', attempts = attempts + 1,
+                        last_attempt_at = ?, last_error = NULL, delivered_at = ?
+                    WHERE decision_id = ?
+                    """,
+                    (sent_at, sent_at, decision_id),
+                )
+                if cursor.rowcount != 1:
+                    raise TelegramDecisionError(
+                        "Decision notification outcome does not exist"
+                    )
             connection.commit()
     except sqlite3.Error as error:
         raise TelegramDecisionError(
             "Telegram Decision mapping could not be recorded"
+        ) from error
+
+
+def _record_notification_failure(path: Path, decision_id: str) -> None:
+    attempted_at = datetime.now(timezone.utc).isoformat(
+        timespec="microseconds"
+    ).replace("+00:00", "Z")
+    try:
+        with _telegram_decision_connection(path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE decision_notification_deliveries SET
+                    status = 'retryable-failure', attempts = attempts + 1,
+                    last_attempt_at = ?, last_error = ?, delivered_at = NULL
+                WHERE decision_id = ?
+                """,
+                (attempted_at, "notification delivery failed", decision_id),
+            )
+            if cursor.rowcount != 1:
+                raise TelegramDecisionError(
+                    "Decision notification outcome does not exist"
+                )
+            connection.commit()
+    except TelegramDecisionError:
+        raise
+    except sqlite3.Error as error:
+        raise TelegramDecisionError(
+            "Decision notification outcome could not be recorded"
         ) from error
 
 

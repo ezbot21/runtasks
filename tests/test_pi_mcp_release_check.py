@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import unittest
+from typing import cast
 
 from runtasks.pi_mcp_releases import (
     EvaluationEvidence,
@@ -74,6 +76,12 @@ class FailingEvaluator:
         raise self.error
 
 
+class MalformedEvaluator:
+    def evaluate(self, evidence: EvaluationEvidence) -> ImportanceAssessment:
+        del evidence
+        return cast(ImportanceAssessment, {"importance": "important"})
+
+
 class FailingReleaseSource:
     name = "github-releases"
     reference = "https://example.invalid/releases"
@@ -139,6 +147,10 @@ class PiMcpReleaseCheckerTests(unittest.TestCase):
                 assert result.assessment is not None
                 self.assertEqual(result.assessment.importance, "uncertain")
                 self.assertIn(expected_failure, result.source_failures)
+                self.assertEqual(
+                    result.source_references[0].as_dict()["reference"],
+                    "https://example.invalid/releases",
+                )
 
     def test_every_intervening_registry_release_is_normalized_from_both_sources_before_evaluation(self) -> None:
         releases = FakeReleaseSource(
@@ -212,6 +224,17 @@ class PiMcpReleaseCheckerTests(unittest.TestCase):
         self.assertIsNotNone(evaluator.received)
         assert evaluator.received is not None
         self.assertEqual(len(evaluator.received.releases[0].sources), 2)
+        source_payload = result.evidence[0].sources[0].as_dict()
+        self.assertEqual(
+            source_payload["reference"],
+            "https://github.com/example/releases/2.26.1",
+        )
+        self.assertEqual(
+            source_payload["reference_fingerprint"],
+            hashlib.sha256(
+                b"https://github.com/example/releases/2.26.1"
+            ).hexdigest(),
+        )
         self.assertEqual(
             evaluator.received.importance_context,
             {"active_mcp_servers": ["stripe"]},
@@ -282,6 +305,129 @@ class PiMcpReleaseCheckerTests(unittest.TestCase):
                 assert result.assessment is not None
                 self.assertEqual(result.assessment.importance, "uncertain")
                 self.assertIn("importance-evaluator", result.source_failures)
+
+    def test_all_uncertainty_paths_require_human_review(self) -> None:
+        complete_note = ReleaseSourceNote(
+            "2.27.0",
+            "2.27.0",
+            "Release evidence for semantic assessment.",
+            "https://example.invalid/releases/2.27.0",
+        )
+        incomplete_coverage = FakeReleaseSource(
+            name="changelog",
+            reference="https://example.invalid/CHANGELOG.md",
+            notes={"2.27.0": complete_note},
+        )
+        malformed_notes = FakeReleaseSource(
+            name="changelog",
+            reference="https://example.invalid/CHANGELOG.md",
+            notes={
+                "2.27.0": ReleaseSourceNote(
+                    "2.27.0",
+                    "2.27.0",
+                    "",
+                    "https://example.invalid/releases/2.27.0",
+                )
+            },
+        )
+        complete_source = FakeReleaseSource(
+            name="changelog",
+            reference="https://example.invalid/CHANGELOG.md",
+            notes={"2.27.0": complete_note},
+        )
+        cases = (
+            (
+                "missing-release-notes",
+                FakeReleaseSource(
+                    name="changelog",
+                    reference="https://example.invalid/CHANGELOG.md",
+                    notes={},
+                ),
+                UnexpectedEvaluator(),
+                ("2.26.1", "2.27.0"),
+            ),
+            (
+                "incomplete-release-coverage",
+                incomplete_coverage,
+                UnexpectedEvaluator(),
+                ("2.26.1", "2.26.2", "2.27.0"),
+            ),
+            (
+                "release-parser-failure",
+                malformed_notes,
+                UnexpectedEvaluator(),
+                ("2.26.1", "2.27.0"),
+            ),
+            (
+                "evaluator-failure",
+                complete_source,
+                FailingEvaluator(TimeoutError("evaluator timed out")),
+                ("2.26.1", "2.27.0"),
+            ),
+            (
+                "malformed-evaluator-output",
+                complete_source,
+                MalformedEvaluator(),
+                ("2.26.1", "2.27.0"),
+            ),
+            (
+                "low-confidence",
+                complete_source,
+                RecordingEvaluator(
+                    ImportanceAssessment(
+                        "important",
+                        "security",
+                        "The update may fix a security defect.",
+                        "Review manually.",
+                        "low",
+                    )
+                ),
+                ("2.26.1", "2.27.0"),
+            ),
+            (
+                "genuine-ambiguity",
+                complete_source,
+                RecordingEvaluator(
+                    ImportanceAssessment(
+                        "uncertain",
+                        "uncertain",
+                        "The evidence supports more than one relevant interpretation.",
+                        "Review manually.",
+                        "medium",
+                    )
+                ),
+                ("2.26.1", "2.27.0"),
+            ),
+        )
+
+        for name, source, evaluator, stable_versions in cases:
+            with self.subTest(path=name):
+                checker = PiMcpReleaseChecker(
+                    installed_versions=FakeInstalledVersionSource(
+                        InstallationEvidence("2.26.1", "0.84.2", "^0.84.1")
+                    ),
+                    registry=FakeRegistry(
+                        RegistrySnapshot("2.27.0", stable_versions)
+                    ),
+                    release_sources=(source,),
+                    evaluator=evaluator,
+                )
+
+                result = checker.check(importance_context={})
+
+                self.assertEqual(result.outcome, "decision-required")
+                self.assertIsNotNone(result.assessment)
+                assert result.assessment is not None
+                if name == "low-confidence":
+                    self.assertEqual(result.assessment.importance, "important")
+                    self.assertEqual(result.assessment.category, "security")
+                    self.assertEqual(
+                        result.assessment.reason,
+                        "The update may fix a security defect.",
+                    )
+                    self.assertEqual(result.assessment.confidence, "low")
+                else:
+                    self.assertEqual(result.assessment.importance, "uncertain")
 
     def test_security_category_cannot_be_accepted_as_non_important(self) -> None:
         source = FakeReleaseSource(

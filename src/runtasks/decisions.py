@@ -18,6 +18,13 @@ from runtasks.tasks import Task
 
 DECISION_STATUSES = frozenset({"pending", "approved", "rejected"})
 _RESPONSE_TARGETS = {"approve": "approved", "reject": "rejected"}
+_NOTIFICATION_SELECT_COLUMNS = """
+    notification.status AS notification_status,
+    notification.attempts AS notification_attempts,
+    notification.last_attempt_at AS notification_last_attempt_at,
+    notification.last_error AS notification_last_error,
+    notification.delivered_at AS notification_delivered_at
+"""
 
 
 class DecisionError(RuntimeError):
@@ -51,6 +58,24 @@ class DecisionTransitionResult:
 
 
 @dataclass(frozen=True)
+class DecisionNotificationDelivery:
+    status: str
+    attempts: int
+    last_attempt_at: str | None
+    last_error: str | None
+    delivered_at: str | None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "attempts": self.attempts,
+            "delivered_at": self.delivered_at,
+            "last_attempt_at": self.last_attempt_at,
+            "last_error": self.last_error,
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
 class Decision:
     id: str
     task_id: str
@@ -61,6 +86,7 @@ class Decision:
     reason: str
     validation_summary: str
     rollback_summary: str
+    notification_delivery: DecisionNotificationDelivery
     response: DecisionResponse | None
     approval_run_id: str | None
     execution_scheduled_at: str | None
@@ -73,6 +99,7 @@ class Decision:
             "created_at": self.created_at,
             "execution_scheduled_at": self.execution_scheduled_at,
             "id": self.id,
+            "notification_delivery": self.notification_delivery.as_dict(),
             "plan": self.plan,
             "plan_hash": self.plan_hash,
             "reason": self.reason,
@@ -135,6 +162,14 @@ def record_pending_decision(
                     finished_at,
                 ),
             )
+            connection.execute(
+                """
+                INSERT INTO decision_notification_deliveries(
+                    decision_id, status, attempts
+                ) VALUES (?, 'pending', 0)
+                """,
+                (decision_id,),
+            )
             merged_details = dict(outcome.details)
             merged_details.update(cast(dict[str, object], stored_details_value))
             merged_details.update(
@@ -171,7 +206,7 @@ def get_decision(path: Path, decision_id: str) -> Decision:
     try:
         with _decision_connection(path) as connection:
             row = connection.execute(
-                "SELECT * FROM decisions WHERE id = ?",
+                f"{_DECISION_SELECT} WHERE decisions.id = ?",
                 (decision_id,),
             ).fetchone()
     except DecisionError:
@@ -187,7 +222,7 @@ def list_decisions(path: Path) -> list[Decision]:
     try:
         with _decision_connection(path) as connection:
             rows = connection.execute(
-                "SELECT * FROM decisions ORDER BY created_at DESC, id DESC"
+                f"{_DECISION_SELECT} ORDER BY decisions.created_at DESC, decisions.id DESC"
             ).fetchall()
     except DecisionError:
         raise
@@ -213,11 +248,14 @@ def transition_decision(
         with _decision_connection(path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                """
+                f"""
                 SELECT decisions.*, tasks.name AS task_name,
-                       tasks.removed_at AS task_removed_at
+                       tasks.removed_at AS task_removed_at,
+                       {_NOTIFICATION_SELECT_COLUMNS}
                 FROM decisions
                 JOIN tasks ON tasks.id = decisions.task_id
+                JOIN decision_notification_deliveries AS notification
+                  ON notification.decision_id = decisions.id
                 WHERE decisions.id = ?
                 """,
                 (decision_id,),
@@ -401,10 +439,13 @@ def search_decisions(path: Path, query: str) -> list[Decision]:
     try:
         with _decision_connection(path) as connection:
             rows = connection.execute(
-                """
-                SELECT decisions.*
+                f"""
+                SELECT decisions.*,
+                       {_NOTIFICATION_SELECT_COLUMNS}
                 FROM decision_fts
                 JOIN decisions ON decisions.id = decision_fts.decision_id
+                JOIN decision_notification_deliveries AS notification
+                  ON notification.decision_id = decisions.id
                 WHERE decision_fts MATCH ?
                 ORDER BY bm25(decision_fts), decisions.created_at DESC
                 """,
@@ -417,6 +458,15 @@ def search_decisions(path: Path, query: str) -> list[Decision]:
     except sqlite3.Error as error:
         raise DecisionError("Decision search failed") from error
     return [_decision_from_row(row) for row in rows]
+
+
+_DECISION_SELECT = f"""
+    SELECT decisions.*,
+           {_NOTIFICATION_SELECT_COLUMNS}
+    FROM decisions
+    JOIN decision_notification_deliveries AS notification
+      ON notification.decision_id = decisions.id
+"""
 
 
 def canonical_plan_json(plan: dict[str, object]) -> str:
@@ -443,6 +493,32 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
             responded_by=str(row["responded_by"]),
             responded_at=str(row["responded_at"]),
         )
+    notification_status = str(row["notification_status"])
+    if notification_status not in {
+        "pending",
+        "retryable-failure",
+        "delivered",
+    }:
+        raise DecisionError("stored Decision notification status is invalid")
+    notification = DecisionNotificationDelivery(
+        status=notification_status,
+        attempts=int(row["notification_attempts"]),
+        last_attempt_at=(
+            None
+            if row["notification_last_attempt_at"] is None
+            else str(row["notification_last_attempt_at"])
+        ),
+        last_error=(
+            None
+            if row["notification_last_error"] is None
+            else str(row["notification_last_error"])
+        ),
+        delivered_at=(
+            None
+            if row["notification_delivered_at"] is None
+            else str(row["notification_delivered_at"])
+        ),
+    )
     return Decision(
         id=str(row["id"]),
         task_id=str(row["task_id"]),
@@ -453,6 +529,7 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
         reason=str(row["reason"]),
         validation_summary=str(row["validation_summary"]),
         rollback_summary=str(row["rollback_summary"]),
+        notification_delivery=notification,
         response=response,
         approval_run_id=(
             None if row["approval_run_id"] is None else str(row["approval_run_id"])

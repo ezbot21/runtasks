@@ -152,7 +152,12 @@ def _pi_mcp_release_handler_outcome(
         raise HandlerError("Pi MCP available version is invalid")
     evidence = details.get("evidence")
     source_failures = details.get("source_failures")
-    if not isinstance(evidence, list) or not isinstance(source_failures, list):
+    source_references = details.get("source_references", [])
+    if (
+        not isinstance(evidence, list)
+        or not isinstance(source_failures, list)
+        or not isinstance(source_references, list)
+    ):
         raise HandlerError("Pi MCP release evidence is invalid")
 
     if result == "no-change":
@@ -215,6 +220,7 @@ def _pi_mcp_release_handler_outcome(
         assessment=cast(dict[str, object], assessment),
         evidence=cast(list[object], evidence),
         source_failures=cast(list[object], source_failures),
+        source_references=cast(list[object], source_references),
     )
     validation_summary = (
         "Install only the exact approved version, verify package metadata, restart "
@@ -250,6 +256,7 @@ def _pi_mcp_decision_plan(
     assessment: dict[str, object],
     evidence: list[object],
     source_failures: list[object],
+    source_references: list[object],
 ) -> dict[str, object]:
     common_parameters: dict[str, object] = {
         "available_version": available_version,
@@ -264,6 +271,7 @@ def _pi_mcp_decision_plan(
             "evidence": {
                 "releases": evidence,
                 "source_failures": source_failures,
+                "source_references": source_references,
             },
             "handler": "pi_mcp_adapter",
             "operation": "manual-review-only",
@@ -276,6 +284,7 @@ def _pi_mcp_decision_plan(
         "evidence": {
             "releases": evidence,
             "source_failures": source_failures,
+            "source_references": source_references,
         },
         "handler": "pi_mcp_adapter",
         "operation": "install-exact-version",

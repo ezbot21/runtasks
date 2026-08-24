@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 import sqlite3
@@ -7,9 +8,11 @@ import tempfile
 import unittest
 from typing import Any, Mapping, Sequence, cast
 
+from runtasks.notifications import NotificationDestinationError
 from runtasks.one_shot import OneShotRunTrigger, OneShotRunTriggerError
 from runtasks.redaction import Redactor
 from runtasks.telegram_config import load_telegram_settings
+from runtasks.telegram_errors import TelegramDeliveryError
 from runtasks.telegram_decisions import (
     TelegramDecisionButton,
     TelegramDecisionClient,
@@ -89,6 +92,32 @@ class RecordingDecisionClient(TelegramDecisionClient):
         show_alert: bool = False,
     ) -> None:
         self.callback_answers.append((callback_id, text, show_alert))
+
+
+class FailingDecisionClient(RecordingDecisionClient):
+    async def send_interactive_message(
+        self,
+        *,
+        destination: int,
+        text: str,
+        buttons: Sequence[TelegramDecisionButton],
+        thread_id: int | None = None,
+    ) -> int:
+        del destination, text, buttons, thread_id
+        raise TelegramDeliveryError("private Telegram transport diagnostics")
+
+
+class InvalidDestinationDecisionClient(RecordingDecisionClient):
+    async def send_interactive_message(
+        self,
+        *,
+        destination: int,
+        text: str,
+        buttons: Sequence[TelegramDecisionButton],
+        thread_id: int | None = None,
+    ) -> int:
+        del destination, text, buttons, thread_id
+        raise NotificationDestinationError("notification destination is invalid")
 
 
 class RecordingOneShotTrigger(OneShotRunTrigger):
@@ -183,6 +212,13 @@ class TelegramDecisionTests(unittest.IsolatedAsyncioTestCase):
                         "health_check": "Pi Web",
                     },
                     "rollback": {"target_version": "2.26.1"},
+                    "assessment": {
+                        "importance": "important",
+                        "category": "credential-oauth",
+                        "reason": "OAuth credential handling needs a reviewed update.",
+                        "recommendation": "Install the exact proposed version after approval.",
+                        "confidence": "high",
+                    },
                     "evidence": {
                         "release": "Security and OAuth correction",
                         "private_note": "private-plan-evidence",
@@ -207,9 +243,10 @@ class TelegramDecisionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_schema_five_migration_preserves_pending_decisions(self) -> None:
         with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DROP TABLE decision_notification_deliveries")
             connection.execute("DROP TABLE telegram_decision_messages")
             connection.execute("DROP TABLE approval_run_trigger_requests")
-            connection.execute("DELETE FROM schema_migrations WHERE version = 6")
+            connection.execute("DELETE FROM schema_migrations WHERE version >= 6")
 
         initialized = run_cli(self.home, "init")
         shown = self._run_cli(
@@ -219,7 +256,124 @@ class TelegramDecisionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         self.assertEqual(shown, self.decision)
-        self.assertEqual(status["database"]["schema_version"], 6)
+        self.assertEqual(status["database"]["schema_version"], 7)
+        self.assertEqual(
+            shown["notification_delivery"],
+            {
+                "attempts": 0,
+                "delivered_at": None,
+                "last_attempt_at": None,
+                "last_error": None,
+                "status": "pending",
+            },
+        )
+
+    async def test_schema_six_migration_preserves_delivered_notification_outcomes(self) -> None:
+        messages = RecordingDecisionClient()
+        await listen_for_decisions(
+            RecordedUpdateSource([]),
+            messages,
+            self.settings,
+            self.database_path,
+            RecordingOneShotTrigger(),
+            Redactor(),
+            max_batches=0,
+        )
+        delivered_before = self._run_cli(
+            "decision", "show", str(self.decision["id"]), "--json"
+        )["decision"]["notification_delivery"]
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DROP TABLE decision_notification_deliveries")
+            connection.execute("DELETE FROM schema_migrations WHERE version = 7")
+
+        initialized = run_cli(self.home, "init")
+        delivered_after = self._run_cli(
+            "decision", "show", str(self.decision["id"]), "--json"
+        )["decision"]["notification_delivery"]
+
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        self.assertEqual(delivered_before["status"], "delivered")
+        self.assertEqual(delivered_after, delivered_before)
+
+    async def test_invalid_notification_destination_is_not_retried_silently(self) -> None:
+        with self.assertRaises(NotificationDestinationError):
+            await listen_for_decisions(
+                RecordedUpdateSource([]),
+                InvalidDestinationDecisionClient(),
+                self.settings,
+                self.database_path,
+                RecordingOneShotTrigger(),
+                Redactor(),
+                max_batches=0,
+            )
+
+        shown = self._run_cli(
+            "decision", "show", str(self.decision["id"]), "--json"
+        )["decision"]
+        self.assertEqual(
+            shown["notification_delivery"],
+            {
+                "attempts": 0,
+                "delivered_at": None,
+                "last_attempt_at": None,
+                "last_error": None,
+                "status": "pending",
+            },
+        )
+
+    async def test_notification_failure_is_retryable_and_does_not_duplicate_the_decision(self) -> None:
+        await listen_for_decisions(
+            RecordedUpdateSource([]),
+            FailingDecisionClient(),
+            self.settings,
+            self.database_path,
+            RecordingOneShotTrigger(),
+            Redactor.from_secret_values(["private Telegram transport diagnostics"]),
+            max_batches=0,
+        )
+
+        failed = self._run_cli(
+            "decision", "show", str(self.decision["id"]), "--json"
+        )["decision"]
+        self.assertEqual(failed["status"], "pending")
+        self.assertEqual(
+            failed["notification_delivery"],
+            {
+                "attempts": 1,
+                "delivered_at": None,
+                "last_attempt_at": failed["notification_delivery"]["last_attempt_at"],
+                "last_error": "notification delivery failed",
+                "status": "retryable-failure",
+            },
+        )
+        self.assertIsNotNone(failed["notification_delivery"]["last_attempt_at"])
+        self.assertNotIn(
+            "private Telegram transport diagnostics",
+            json.dumps(failed),
+        )
+        self.assertEqual(len(self._run_cli("decisions", "--json")["decisions"]), 1)
+
+        messages = RecordingDecisionClient()
+        await listen_for_decisions(
+            RecordedUpdateSource([]),
+            messages,
+            self.settings,
+            self.database_path,
+            RecordingOneShotTrigger(),
+            Redactor(),
+            max_batches=0,
+        )
+
+        delivered = self._run_cli(
+            "decision", "show", str(self.decision["id"]), "--json"
+        )["decision"]
+        self.assertEqual(delivered["status"], "pending")
+        self.assertEqual(delivered["notification_delivery"]["status"], "delivered")
+        self.assertEqual(delivered["notification_delivery"]["attempts"], 2)
+        self.assertIsNotNone(delivered["notification_delivery"]["delivered_at"])
+        self.assertIsNone(delivered["notification_delivery"]["last_error"])
+        self.assertEqual(len(messages.interactive_messages), 1)
+        self.assertEqual(len(self._run_cli("decisions", "--json")["decisions"]), 1)
 
     async def test_pending_decision_is_sent_with_compact_inline_controls(self) -> None:
         updates = FakeTelegramClient(update_batches=[[]])
@@ -245,12 +399,16 @@ class TelegramDecisionTests(unittest.IsolatedAsyncioTestCase):
             """RunTasks needs your decision
 
 Task: Approved adapter update
+Installed version: 2.26.1
+Proposed stable version: 2.27.0
+Category: credential-oauth
+Confidence: high
 Reason: OAuth credential handling needs a reviewed update.
 
-Proposed operation:
+Exact operation:
 install-exact-version via pi_mcp_adapter
 
-Parameters:
+Procedure:
 - installed_version: 2.26.1
 - restart_service: pi-web.service
 - target_version: 2.27.0
@@ -769,6 +927,96 @@ No execution was requested.""",
             ],
         )
 
+    async def test_large_details_deliver_all_evidence_with_controls_within_telegram_limits(self) -> None:
+        large_evidence = (
+            "intervening release evidence "
+            + ("x" * 6_000)
+            + " terminal-evidence-marker"
+        )
+        plan = copy.deepcopy(self.decision["plan"])
+        plan["evidence"] = {"all_intervening_releases": large_evidence}
+        outcome = {
+            "status": "decision-required",
+            "summary": "Large release evidence requires approval.",
+            "details": {"assessment": "large evidence"},
+            "decision": {
+                "plan": plan,
+                "reason": self.decision["reason"],
+                "validation_summary": self.decision["validation_summary"],
+                "rollback_summary": self.decision["rollback_summary"],
+            },
+        }
+        executed = self._run_cli(
+            "run",
+            str(self.task["id"]),
+            "--json",
+            extra_environment={
+                "RUNTASKS_FIXTURE_HANDLER_OUTCOME": json.dumps(outcome)
+            },
+        )["run"]
+        large_decision = next(
+            decision
+            for decision in self._run_cli("decisions", "--json")["decisions"]
+            if decision["run_id"] == executed["id"]
+        )
+        messages = RecordingDecisionClient()
+        await listen_for_decisions(
+            RecordedUpdateSource([]),
+            messages,
+            self.settings,
+            self.database_path,
+            RecordingOneShotTrigger(),
+            Redactor(),
+            max_batches=0,
+        )
+        initial_message_count = len(messages.interactive_messages)
+        large_initial = next(
+            message
+            for message in messages.interactive_messages
+            if message[2][0].callback_data
+            == f"rt1:{str(large_decision['id'])[4:]}:a"
+        )
+        callback = TelegramCallbackRecord(
+            callback_id="callback-large-details",
+            user_id=USER_ID,
+            chat_id=USER_ID,
+            chat_type="private",
+            message_id=large_initial[4],
+            data=f"rt1:{str(large_decision['id'])[4:]}:d",
+        )
+
+        await listen_for_decisions(
+            RecordedUpdateSource([[TelegramUpdateRecord(260, None, callback)]]),
+            messages,
+            self.settings,
+            self.database_path,
+            RecordingOneShotTrigger(),
+            Redactor(),
+            max_batches=1,
+        )
+
+        detail_plain_chunks = [text for _, text, _ in messages.messages]
+        detail_interactive_chunks = [
+            message[1]
+            for message in messages.interactive_messages[initial_message_count:]
+        ]
+        detail_chunks = [*detail_plain_chunks, *detail_interactive_chunks]
+        self.assertGreater(len(detail_chunks), 1)
+        self.assertTrue(
+            all(len(chunk.encode("utf-16-le")) // 2 <= 3_800 for chunk in detail_chunks)
+        )
+        combined_details = "".join(detail_chunks)
+        self.assertIn(large_evidence, combined_details)
+        self.assertIn("terminal-evidence-marker", combined_details)
+        self.assertEqual(
+            messages.interactive_messages[-1][2],
+            large_initial[2],
+        )
+        self.assertEqual(
+            messages.callback_answers[-1],
+            ("callback-large-details", "Decision details sent.", False),
+        )
+
     async def test_details_send_expanded_redacted_evidence_and_repeat_controls(self) -> None:
         decision_reference = str(self.decision["id"])[4:]
         callback = TelegramCallbackRecord(
@@ -801,22 +1049,35 @@ No execution was requested.""",
             f"""RunTasks Decision details
 
 Task: Approved adapter update
+Task ID: {self.task["id"]}
+Run ID: {self.decision["run_id"]}
+Installed version: 2.26.1
+Proposed stable version: 2.27.0
 Reason: OAuth credential handling needs a reviewed update.
 
 Plan hash:
 {self.decision["plan_hash"]}
 
-Operation:
+Assessment:
+{{
+  "category": "credential-oauth",
+  "confidence": "high",
+  "importance": "important",
+  "reason": "OAuth credential handling needs a reviewed update.",
+  "recommendation": "Install the exact proposed version after approval."
+}}
+
+Exact operation:
 install-exact-version via pi_mcp_adapter
 
-Parameters:
+Procedure:
 {{
   "installed_version": "2.26.1",
   "restart_service": "pi-web.service",
   "target_version": "2.27.0"
 }}
 
-Evidence:
+Intervening-release evidence:
 {{
   "private_note": "[REDACTED]",
   "release": "Security and OAuth correction"
@@ -837,7 +1098,9 @@ Restore exact version 2.26.1 on failure.
 Rollback plan:
 {{
   "target_version": "2.26.1"
-}}""",
+}}
+
+Choose 1. APPROVE, 2. REJECT, or 3. DETAILS below.""",
         )
         self.assertEqual(detail_buttons, messages.interactive_messages[0][2])
         self.assertEqual(

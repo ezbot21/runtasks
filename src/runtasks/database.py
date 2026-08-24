@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any, Iterator
 
 
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 7
 BUSY_TIMEOUT_MS = 5_000
 
 
@@ -107,6 +107,9 @@ def _apply_migrations(connection: sqlite3.Connection) -> bool:
         if current_version < 6:
             _create_telegram_decision_messages(connection)
             _record_migration(connection, 6)
+        if current_version < 7:
+            _create_decision_notification_deliveries(connection)
+            _record_migration(connection, 7)
         connection.commit()
     except Exception:
         connection.rollback()
@@ -464,6 +467,63 @@ def _create_telegram_decision_messages(connection: sqlite3.Connection) -> None:
         """
         CREATE INDEX telegram_decision_message_lookup_idx
         ON telegram_decision_messages(decision_id, chat_id, message_id)
+        """
+    )
+
+
+def _create_decision_notification_deliveries(
+    connection: sqlite3.Connection,
+) -> None:
+    connection.execute(
+        """
+        CREATE TABLE decision_notification_deliveries (
+            decision_id TEXT PRIMARY KEY REFERENCES decisions(id),
+            status TEXT NOT NULL CHECK (
+                status IN ('pending', 'retryable-failure', 'delivered')
+            ),
+            attempts INTEGER NOT NULL CHECK (attempts >= 0),
+            last_attempt_at TEXT,
+            last_error TEXT,
+            delivered_at TEXT,
+            CHECK (
+                (status = 'pending' AND attempts = 0
+                 AND last_attempt_at IS NULL AND last_error IS NULL
+                 AND delivered_at IS NULL)
+                OR (status = 'retryable-failure' AND attempts > 0
+                    AND last_attempt_at IS NOT NULL
+                    AND last_error IS NOT NULL AND delivered_at IS NULL)
+                OR (status = 'delivered' AND attempts > 0
+                    AND last_attempt_at IS NOT NULL
+                    AND last_error IS NULL AND delivered_at IS NOT NULL)
+            )
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO decision_notification_deliveries(
+            decision_id, status, attempts
+        )
+        SELECT decisions.id, 'pending', 0
+        FROM decisions
+        LEFT JOIN telegram_decision_messages
+          ON telegram_decision_messages.decision_id = decisions.id
+         AND telegram_decision_messages.message_kind = 'decision'
+        WHERE telegram_decision_messages.decision_id IS NULL
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO decision_notification_deliveries(
+            decision_id, status, attempts, last_attempt_at, delivered_at
+        )
+        SELECT decisions.id, 'delivered', 1,
+               telegram_decision_messages.sent_at,
+               telegram_decision_messages.sent_at
+        FROM decisions
+        JOIN telegram_decision_messages
+          ON telegram_decision_messages.decision_id = decisions.id
+         AND telegram_decision_messages.message_kind = 'decision'
         """
     )
 
