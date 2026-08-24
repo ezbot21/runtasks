@@ -250,7 +250,7 @@ class RunTasksCliTests(unittest.TestCase):
                         "fts5": True,
                         "journal_mode": "wal",
                         "path": str(home / "var" / "data" / "runtasks.sqlite3"),
-                        "schema_version": 7,
+                        "schema_version": 8,
                     },
                     "home": str(home),
                     "initialized": True,
@@ -285,7 +285,7 @@ class RunTasksCliTests(unittest.TestCase):
 
             self.assertEqual(initialization.returncode, 0, initialization.stderr)
             self.assertEqual(status.returncode, 0, status.stderr)
-            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 7)
+            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 8)
             self.assertEqual(tasks.returncode, 0, tasks.stderr)
             self.assertEqual(json.loads(tasks.stdout)["tasks"], [])
 
@@ -318,6 +318,7 @@ class RunTasksCliTests(unittest.TestCase):
             task = json.loads(added.stdout)["task"]
             database_file = home / "var" / "data" / "runtasks.sqlite3"
             with sqlite3.connect(database_file) as connection:
+                connection.execute("DROP TABLE decision_execution_outcomes")
                 connection.execute("DROP TABLE decision_notification_deliveries")
                 connection.execute("DROP TABLE telegram_decision_messages")
                 connection.execute("DROP TABLE approval_run_trigger_requests")
@@ -333,7 +334,7 @@ class RunTasksCliTests(unittest.TestCase):
             history = self.run_cli(home, "--json", "history", task["id"])
 
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 7)
+            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 8)
             self.assertEqual(json.loads(shown.stdout)["task"], task)
             self.assertEqual(json.loads(history.stdout)["runs"], [])
 
@@ -369,6 +370,7 @@ class RunTasksCliTests(unittest.TestCase):
             retained_run = json.loads(executed.stdout)["run"]
             database_file = home / "var" / "data" / "runtasks.sqlite3"
             with sqlite3.connect(database_file) as connection:
+                connection.execute("DROP TABLE decision_execution_outcomes")
                 connection.execute("DROP TABLE decision_notification_deliveries")
                 connection.execute("DROP TABLE telegram_decision_messages")
                 connection.execute("DROP TABLE approval_run_trigger_requests")
@@ -386,7 +388,7 @@ class RunTasksCliTests(unittest.TestCase):
             decisions = self.run_cli(home, "decisions", "--json")
 
             self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 7)
+            self.assertEqual(json.loads(status.stdout)["database"]["schema_version"], 8)
             self.assertEqual(json.loads(history.stdout)["runs"], [retained_run])
             self.assertEqual(json.loads(decisions.stdout)["decisions"], [])
 

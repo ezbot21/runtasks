@@ -243,6 +243,7 @@ class TelegramDecisionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_schema_five_migration_preserves_pending_decisions(self) -> None:
         with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DROP TABLE decision_execution_outcomes")
             connection.execute("DROP TABLE decision_notification_deliveries")
             connection.execute("DROP TABLE telegram_decision_messages")
             connection.execute("DROP TABLE approval_run_trigger_requests")
@@ -256,7 +257,7 @@ class TelegramDecisionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         self.assertEqual(shown, self.decision)
-        self.assertEqual(status["database"]["schema_version"], 7)
+        self.assertEqual(status["database"]["schema_version"], 8)
         self.assertEqual(
             shown["notification_delivery"],
             {
@@ -283,8 +284,9 @@ class TelegramDecisionTests(unittest.IsolatedAsyncioTestCase):
             "decision", "show", str(self.decision["id"]), "--json"
         )["decision"]["notification_delivery"]
         with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DROP TABLE decision_execution_outcomes")
             connection.execute("DROP TABLE decision_notification_deliveries")
-            connection.execute("DELETE FROM schema_migrations WHERE version = 7")
+            connection.execute("DELETE FROM schema_migrations WHERE version >= 7")
 
         initialized = run_cli(self.home, "init")
         delivered_after = self._run_cli(
@@ -294,6 +296,21 @@ class TelegramDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         self.assertEqual(delivered_before["status"], "delivered")
         self.assertEqual(delivered_after, delivered_before)
+
+    async def test_schema_seven_migration_preserves_pending_decisions(self) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DROP TABLE decision_execution_outcomes")
+            connection.execute("DELETE FROM schema_migrations WHERE version = 8")
+
+        initialized = run_cli(self.home, "init")
+        shown = self._run_cli(
+            "decision", "show", str(self.decision["id"]), "--json"
+        )["decision"]
+        status = self._run_cli("status", "--json")
+
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        self.assertEqual(shown, self.decision)
+        self.assertEqual(status["database"]["schema_version"], 8)
 
     async def test_invalid_notification_destination_is_not_retried_silently(self) -> None:
         with self.assertRaises(NotificationDestinationError):

@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any, Iterator
 
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 8
 BUSY_TIMEOUT_MS = 5_000
 
 
@@ -110,6 +110,9 @@ def _apply_migrations(connection: sqlite3.Connection) -> bool:
         if current_version < 7:
             _create_decision_notification_deliveries(connection)
             _record_migration(connection, 7)
+        if current_version < 8:
+            _create_decision_execution_outcomes(connection)
+            _record_migration(connection, 8)
         connection.commit()
     except Exception:
         connection.rollback()
@@ -524,6 +527,80 @@ def _create_decision_notification_deliveries(
         JOIN telegram_decision_messages
           ON telegram_decision_messages.decision_id = decisions.id
          AND telegram_decision_messages.message_kind = 'decision'
+        """
+    )
+
+
+def _create_decision_execution_outcomes(
+    connection: sqlite3.Connection,
+) -> None:
+    connection.execute(
+        """
+        CREATE TABLE decision_execution_outcomes (
+            decision_id TEXT PRIMARY KEY REFERENCES decisions(id),
+            approval_run_id TEXT NOT NULL UNIQUE REFERENCES runs(id),
+            status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
+            summary TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            notification_status TEXT NOT NULL CHECK (
+                notification_status IN (
+                    'not-required', 'pending', 'sending',
+                    'retryable-failure', 'delivered'
+                )
+            ),
+            notification_attempts INTEGER NOT NULL CHECK (
+                notification_attempts >= 0
+            ),
+            notification_claimed_at TEXT,
+            notification_last_attempt_at TEXT,
+            notification_last_error TEXT,
+            notification_delivered_at TEXT,
+            CHECK (
+                (status = 'failed'
+                 AND notification_status = 'not-required'
+                 AND notification_attempts = 0
+                 AND notification_claimed_at IS NULL
+                 AND notification_last_attempt_at IS NULL
+                 AND notification_last_error IS NULL
+                 AND notification_delivered_at IS NULL)
+                OR
+                (status = 'completed'
+                 AND notification_status = 'pending'
+                 AND notification_attempts = 0
+                 AND notification_claimed_at IS NULL
+                 AND notification_last_attempt_at IS NULL
+                 AND notification_last_error IS NULL
+                 AND notification_delivered_at IS NULL)
+                OR
+                (status = 'completed'
+                 AND notification_status = 'sending'
+                 AND notification_claimed_at IS NOT NULL
+                 AND notification_delivered_at IS NULL)
+                OR
+                (status = 'completed'
+                 AND notification_status = 'retryable-failure'
+                 AND notification_attempts > 0
+                 AND notification_claimed_at IS NULL
+                 AND notification_last_attempt_at IS NOT NULL
+                 AND notification_last_error IS NOT NULL
+                 AND notification_delivered_at IS NULL)
+                OR
+                (status = 'completed'
+                 AND notification_status = 'delivered'
+                 AND notification_attempts > 0
+                 AND notification_claimed_at IS NULL
+                 AND notification_last_attempt_at IS NOT NULL
+                 AND notification_last_error IS NULL
+                 AND notification_delivered_at IS NOT NULL)
+            )
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX decision_execution_status_idx
+        ON decision_execution_outcomes(status, completed_at DESC)
         """
     )
 

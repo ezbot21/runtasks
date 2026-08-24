@@ -16,7 +16,9 @@ from runtasks.handlers import DecisionRequest, HandlerOutcome
 from runtasks.tasks import Task
 
 
-DECISION_STATUSES = frozenset({"pending", "approved", "rejected"})
+DECISION_STATUSES = frozenset(
+    {"pending", "approved", "rejected", "completed", "failed"}
+)
 _RESPONSE_TARGETS = {"approve": "approved", "reject": "rejected"}
 _NOTIFICATION_SELECT_COLUMNS = """
     notification.status AS notification_status,
@@ -24,6 +26,10 @@ _NOTIFICATION_SELECT_COLUMNS = """
     notification.last_attempt_at AS notification_last_attempt_at,
     notification.last_error AS notification_last_error,
     notification.delivered_at AS notification_delivered_at
+"""
+_EXECUTION_SELECT_COLUMNS = """
+    execution.status AS execution_status,
+    execution.completed_at AS execution_completed_at
 """
 
 
@@ -251,11 +257,14 @@ def transition_decision(
                 f"""
                 SELECT decisions.*, tasks.name AS task_name,
                        tasks.removed_at AS task_removed_at,
-                       {_NOTIFICATION_SELECT_COLUMNS}
+                       {_NOTIFICATION_SELECT_COLUMNS},
+                       {_EXECUTION_SELECT_COLUMNS}
                 FROM decisions
                 JOIN tasks ON tasks.id = decisions.task_id
                 JOIN decision_notification_deliveries AS notification
                   ON notification.decision_id = decisions.id
+                LEFT JOIN decision_execution_outcomes AS execution
+                  ON execution.decision_id = decisions.id
                 WHERE decisions.id = ?
                 """,
                 (decision_id,),
@@ -441,11 +450,14 @@ def search_decisions(path: Path, query: str) -> list[Decision]:
             rows = connection.execute(
                 f"""
                 SELECT decisions.*,
-                       {_NOTIFICATION_SELECT_COLUMNS}
+                       {_NOTIFICATION_SELECT_COLUMNS},
+                       {_EXECUTION_SELECT_COLUMNS}
                 FROM decision_fts
                 JOIN decisions ON decisions.id = decision_fts.decision_id
                 JOIN decision_notification_deliveries AS notification
                   ON notification.decision_id = decisions.id
+                LEFT JOIN decision_execution_outcomes AS execution
+                  ON execution.decision_id = decisions.id
                 WHERE decision_fts MATCH ?
                 ORDER BY bm25(decision_fts), decisions.created_at DESC
                 """,
@@ -462,10 +474,13 @@ def search_decisions(path: Path, query: str) -> list[Decision]:
 
 _DECISION_SELECT = f"""
     SELECT decisions.*,
-           {_NOTIFICATION_SELECT_COLUMNS}
+           {_NOTIFICATION_SELECT_COLUMNS},
+           {_EXECUTION_SELECT_COLUMNS}
     FROM decisions
     JOIN decision_notification_deliveries AS notification
       ON notification.decision_id = decisions.id
+    LEFT JOIN decision_execution_outcomes AS execution
+      ON execution.decision_id = decisions.id
 """
 
 
@@ -476,7 +491,17 @@ def canonical_plan_json(plan: dict[str, object]) -> str:
 
 def _decision_from_row(row: sqlite3.Row) -> Decision:
     plan = _verified_plan(row)
-    status = str(row["status"])
+    stored_status = str(row["status"])
+    execution_status = row["execution_status"]
+    status = (
+        stored_status
+        if execution_status is None
+        else str(execution_status)
+    )
+    if stored_status not in {"pending", "approved", "rejected"}:
+        raise DecisionError("stored Decision status is invalid")
+    if execution_status is not None and stored_status != "approved":
+        raise DecisionError("stored Decision execution status is invalid")
     if status not in DECISION_STATUSES:
         raise DecisionError("stored Decision status is invalid")
     response: DecisionResponse | None = None
@@ -540,7 +565,11 @@ def _decision_from_row(row: sqlite3.Row) -> Decision:
             else str(row["execution_scheduled_at"])
         ),
         created_at=str(row["created_at"]),
-        updated_at=str(row["updated_at"]),
+        updated_at=(
+            str(row["updated_at"])
+            if row["execution_completed_at"] is None
+            else str(row["execution_completed_at"])
+        ),
     )
 
 

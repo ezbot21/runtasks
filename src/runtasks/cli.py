@@ -40,6 +40,10 @@ from runtasks.notifications import (
 )
 from runtasks.one_shot import OneShotRunTriggerError
 from runtasks.paths import RuntimePaths
+from runtasks.pi_mcp_execution import PiMcpExecutionError
+from runtasks.pi_mcp_execution_adapters import (
+    build_pi_mcp_execution_adapters,
+)
 from runtasks.redaction import DEFAULT_REDACTOR, Redactor
 from runtasks.runs import Run, RunError, execute_manual_run, list_runs, search_runs
 from runtasks.scheduler import (
@@ -289,6 +293,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         ExternalAdapterError,
         DecisionError,
         RunError,
+        PiMcpExecutionError,
         SchedulerValidationError,
         TaskError,
         NotificationDestinationError,
@@ -525,11 +530,16 @@ def _run_due(
     clock = SystemClock() if now is None else FixedClock(parse_scheduler_time(now))
     adapter = build_external_adapter(secret_settings, _ACTIVE_REDACTOR)
     handler_registry = build_handler_registry(secret_settings, _ACTIVE_REDACTOR)
+    approval_adapters = build_pi_mcp_execution_adapters(
+        secret_settings,
+        _ACTIVE_REDACTOR,
+    )
     result = run_due_tasks(
         paths.database_file,
         clock,
         adapter,
         handler_registry,
+        approval_adapters,
         _ACTIVE_REDACTOR,
     )
     if as_json:
