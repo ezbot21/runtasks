@@ -235,6 +235,7 @@ class RunCliTests(unittest.TestCase):
                     {
                         "operation": "pi_mcp_adapter.inspect",
                         "parameters": {
+                            "importance_context": {},
                             "run_id": run["id"],
                             "task_id": task["id"],
                         },

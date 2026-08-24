@@ -88,6 +88,7 @@ class PiMcpAdapterHandler:
             ExternalRequest(
                 operation="pi_mcp_adapter.inspect",
                 parameters={
+                    "importance_context": _pi_mcp_importance_context(context.task),
                     "run_id": context.run_id,
                     "task_id": context.task.id,
                 },
@@ -101,12 +102,201 @@ class PiMcpAdapterHandler:
                 "mutation_performed": False,
             }
         )
-        return HandlerOutcome(
-            status="success" if outcome.status == "success" else "failed",
-            summary=outcome.summary,
-            details=details,
-            external_log_ref=outcome.external_log_ref,
+        if outcome.status != "success":
+            return HandlerOutcome(
+                status="failed",
+                summary=outcome.summary,
+                details=details,
+                external_log_ref=outcome.external_log_ref,
+            )
+        if details.get("contract") != "pi-mcp-release-check/v1":
+            return HandlerOutcome(
+                status="success",
+                summary=outcome.summary,
+                details=details,
+                external_log_ref=outcome.external_log_ref,
+            )
+        return _pi_mcp_release_handler_outcome(
+            context,
+            outcome.summary,
+            details,
+            outcome.external_log_ref,
         )
+
+
+def _pi_mcp_importance_context(task: Task) -> dict[str, object]:
+    context: dict[str, object] = {}
+    for key in ("active_mcp_servers", "important_conditions"):
+        value = task.policy.get(key)
+        if isinstance(value, list) and all(
+            isinstance(item, str) and item.strip() for item in value
+        ):
+            context[key] = [cast(str, item).strip() for item in value]
+    return context
+
+
+def _pi_mcp_release_handler_outcome(
+    context: HandlerContext,
+    adapter_summary: str,
+    details: dict[str, object],
+    external_log_ref: str | None,
+) -> HandlerOutcome:
+    result = details.get("outcome")
+    if result not in {"no-change", "non-important", "decision-required"}:
+        raise HandlerError("Pi MCP release-check outcome is invalid")
+    installed_version = details.get("installed_version")
+    available_version = details.get("available_version")
+    if installed_version is not None and not isinstance(installed_version, str):
+        raise HandlerError("Pi MCP installed version is invalid")
+    if available_version is not None and not isinstance(available_version, str):
+        raise HandlerError("Pi MCP available version is invalid")
+    evidence = details.get("evidence")
+    source_failures = details.get("source_failures")
+    if not isinstance(evidence, list) or not isinstance(source_failures, list):
+        raise HandlerError("Pi MCP release evidence is invalid")
+
+    if result == "no-change":
+        if installed_version is None or installed_version != available_version:
+            raise HandlerError("Pi MCP no-change versions are inconsistent")
+        return HandlerOutcome(
+            status="no-change",
+            summary=f"Pi MCP adapter remains at stable version {installed_version}.",
+            details=details,
+            external_log_ref=external_log_ref,
+        )
+
+    assessment = details.get("assessment")
+    if not isinstance(assessment, dict):
+        raise HandlerError("Pi MCP importance assessment is invalid")
+    assessment_values = cast(dict[object, object], assessment)
+    required_assessment = {
+        "importance",
+        "category",
+        "reason",
+        "recommendation",
+        "confidence",
+    }
+    if set(assessment_values) != required_assessment or not all(
+        isinstance(assessment_values.get(field), str)
+        and cast(str, assessment_values[field]).strip()
+        for field in required_assessment
+    ):
+        raise HandlerError("Pi MCP importance assessment is invalid")
+    importance = cast(str, assessment_values["importance"])
+    category = cast(str, assessment_values["category"])
+    confidence = cast(str, assessment_values["confidence"])
+    reason = cast(str, assessment_values["reason"]).strip()
+    if result == "non-important":
+        if (
+            importance != "non-important"
+            or category != "routine"
+            or confidence != "high"
+        ):
+            raise HandlerError(
+                "Pi MCP non-important assessment lacks high confidence"
+            )
+        return HandlerOutcome(
+            status="non-important",
+            summary=reason,
+            details=details,
+            external_log_ref=external_log_ref,
+        )
+
+    if importance not in {"important", "uncertain"}:
+        raise HandlerError("Pi MCP Decision assessment is invalid")
+    if importance == "important" and category in {"routine", "uncertain"}:
+        raise HandlerError("Pi MCP important assessment category is invalid")
+    if importance == "uncertain" and category != "uncertain":
+        raise HandlerError("Pi MCP uncertain assessment category is invalid")
+    plan = _pi_mcp_decision_plan(
+        context,
+        installed_version=installed_version,
+        available_version=available_version,
+        assessment=cast(dict[str, object], assessment),
+        evidence=cast(list[object], evidence),
+        source_failures=cast(list[object], source_failures),
+    )
+    validation_summary = (
+        "Install only the exact approved version, verify package metadata, restart "
+        "pi-web.service, confirm Pi Web health, and require exact MCP_ADAPTER_OK."
+        if installed_version is not None and available_version is not None
+        else "This is a manual review only; no package mutation is authorized."
+    )
+    rollback_summary = (
+        f"If post-install validation fails, restore exact version {installed_version}, "
+        "restart Pi Web, and repeat health and MCP validation."
+        if installed_version is not None and available_version is not None
+        else "No rollback is needed because this plan authorizes no mutation."
+    )
+    return HandlerOutcome(
+        status="decision-required",
+        summary=adapter_summary,
+        details=details,
+        external_log_ref=external_log_ref,
+        decision=DecisionRequest(
+            plan=plan,
+            reason=reason,
+            validation_summary=validation_summary,
+            rollback_summary=rollback_summary,
+        ),
+    )
+
+
+def _pi_mcp_decision_plan(
+    context: HandlerContext,
+    *,
+    installed_version: str | None,
+    available_version: str | None,
+    assessment: dict[str, object],
+    evidence: list[object],
+    source_failures: list[object],
+) -> dict[str, object]:
+    common_parameters: dict[str, object] = {
+        "available_version": available_version,
+        "installed_version": installed_version,
+        "package": "pi-mcp-adapter",
+        "run_id": context.run_id,
+        "task_id": context.task.id,
+    }
+    if installed_version is None or available_version is None:
+        return {
+            "assessment": assessment,
+            "evidence": {
+                "releases": evidence,
+                "source_failures": source_failures,
+            },
+            "handler": "pi_mcp_adapter",
+            "operation": "manual-review-only",
+            "parameters": common_parameters,
+            "rollback": {"mutation_authorized": False},
+            "validation": {"mutation_authorized": False},
+        }
+    return {
+        "assessment": assessment,
+        "evidence": {
+            "releases": evidence,
+            "source_failures": source_failures,
+        },
+        "handler": "pi_mcp_adapter",
+        "operation": "install-exact-version",
+        "parameters": {
+            **common_parameters,
+            "package_spec": f"npm:pi-mcp-adapter@{available_version}",
+            "target_version": available_version,
+        },
+        "rollback": {
+            "package_spec": f"npm:pi-mcp-adapter@{installed_version}",
+            "restart_service": "pi-web.service",
+            "target_version": installed_version,
+            "validate_mcp_result": "MCP_ADAPTER_OK",
+        },
+        "validation": {
+            "expected_installed_version": available_version,
+            "expected_mcp_result": "MCP_ADAPTER_OK",
+            "health_check": "Pi Web healthy",
+            "restart_service": "pi-web.service",
+        },
+    }
 
 
 class FixtureHandler:

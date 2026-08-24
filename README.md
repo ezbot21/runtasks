@@ -156,10 +156,21 @@ The current execution modes are deliberately bounded:
 
 - `notify` through `manual_notification` records `manual-action-due` without calling
   an external adapter or mutating an external system.
-- `check` (and the read-only check phase of `approved-procedure`) through
-  `pi_mcp_adapter` issues only the named `pi_mcp_adapter.inspect` adapter operation.
-  The production Pi release-inspection adapter is implemented in a later feature; until
-  configured, the local adapter returns a structured failure without executing a command.
+- The scheduled check phase of `approved-procedure` through `pi_mcp_adapter` issues
+  only the named, read-only `pi_mcp_adapter.inspect` operation. It reads the installed
+  `pi-mcp-adapter` package metadata relative to `PI_CODING_AGENT_DIR` (or the current
+  user's `~/.pi/agent`), queries npm's stable `latest` dist-tag using Pi's configured
+  `npmCommand`, gathers every intervening version from GitHub Releases and the project
+  changelog, and sends normalized evidence to a tool-disabled, ephemeral Pi evaluator.
+  It never runs `pi install`, restarts a service, or changes the exact package pin.
+
+A same-version result records `no-change`. A high-confidence assessment covering only
+routine features, documentation, refactoring, or irrelevant fixes records
+`non-important`. Both outcomes remain quiet because they create no pending Decision.
+Important results and every uncertain result—source failure, missing release evidence,
+malformed metadata, evaluator error, low confidence, or timeout—record
+`decision-required` with an immutable exact-version plan when valid versions are known.
+Version shape alone is never used to decide importance.
 
 Handlers and external adapters exchange structured requests and outcomes. Successful,
 failed, and manual-action-due Runs retain Task identity, timestamps, a redacted summary,
@@ -204,9 +215,10 @@ Decision reason, validation summary, and rollback summary text participates in t
 public FTS5-backed `search` command alongside Task and Run matches. Plan evidence is
 redacted before storage and output. Telegram and CLI responses share this same
 transactional Decision transition: an approval can create only one claimed approval
-Run, while rejection creates no execution work. The current production Pi MCP adapter
-handler still performs only its bounded read-only inspection; a later handler feature
-supplies its real update plans and executes claimed approval Runs.
+Run, while rejection creates no execution work. The production Pi MCP adapter handler
+now supplies real read-only release assessments and immutable exact-version update
+plans. Execution of claimed approval Runs, package mutation, restart validation, and
+rollback remain separate later work; this handler never performs them during a check.
 
 Initialization creates:
 
