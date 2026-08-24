@@ -38,6 +38,7 @@ from runtasks.notifications import (
     NotificationDeliveryError,
     NotificationDestinationError,
 )
+from runtasks.one_shot import OneShotRunTriggerError
 from runtasks.paths import RuntimePaths
 from runtasks.redaction import DEFAULT_REDACTOR, Redactor
 from runtasks.runs import Run, RunError, execute_manual_run, list_runs, search_runs
@@ -72,6 +73,7 @@ from runtasks.telegram import (
     TelegramConfigurationError,
     TelegramDeliveryError,
 )
+from runtasks.telegram_decisions import TelegramDecisionError
 from runtasks.telegram_cli import add_telegram_parser, run_telegram_command
 
 
@@ -272,6 +274,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return _report_task_conflict(error, getattr(options, "as_json", False))
     except (
         NotificationDeliveryError,
+        OneShotRunTriggerError,
         TelegramDeliveryError,
         PollerAlreadyRunningError,
     ):
@@ -290,6 +293,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         TaskError,
         NotificationDestinationError,
         TelegramConfigurationError,
+        TelegramDecisionError,
     ) as error:
         return _report_error(str(error), getattr(options, "as_json", False))
     except (OSError, RuntimeError, ValueError):

@@ -32,9 +32,30 @@ class TelegramMessageRecord:
 
 
 @dataclass(frozen=True)
+class TelegramCallbackRecord:
+    callback_id: str
+    user_id: int
+    chat_id: int | None
+    chat_type: str | None
+    message_id: int | None
+    data: str | None
+
+    @property
+    def authorization_context(self) -> TelegramAuthorizationContext | None:
+        if self.chat_id is None or self.chat_type is None:
+            return None
+        return TelegramAuthorizationContext(
+            user_id=self.user_id,
+            chat_id=self.chat_id,
+            chat_type=self.chat_type,
+        )
+
+
+@dataclass(frozen=True)
 class TelegramUpdateRecord:
     update_id: int
     message: TelegramMessageRecord | None
+    callback: TelegramCallbackRecord | None = None
 
 
 @dataclass(frozen=True)
@@ -65,10 +86,12 @@ class SetupDiscovery:
     authorization_mismatches: tuple[SetupCandidate, ...] = ()
 
 
-class TelegramUpdateClient(Protocol):
-    async def get_bot_username(self) -> str: ...
-
+class TelegramLongPollingClient(Protocol):
     async def get_webhook_url(self) -> str: ...
+
+
+class TelegramUpdateClient(TelegramLongPollingClient, Protocol):
+    async def get_bot_username(self) -> str: ...
 
     async def get_updates_transport(
         self,
@@ -158,7 +181,7 @@ async def _discover_setup_candidates(
             timeout_seconds=remaining,
             offset=offset,
         )
-        candidates = _setup_candidates_from_updates(
+        candidates = setup_candidates_from_updates(
             updates,
             bot_username=bot_username,
         )
@@ -205,7 +228,7 @@ async def listen_for_authorization_checks(
     batches = 0
     while max_batches is None or batches < max_batches:
         updates = await client.get_updates(timeout_seconds=30, offset=offset)
-        candidates = _setup_candidates_from_updates(
+        candidates = setup_candidates_from_updates(
             updates,
             bot_username=bot_username,
         )
@@ -221,7 +244,7 @@ async def listen_for_authorization_checks(
         batches += 1
 
 
-async def verify_long_polling(client: _TelegramPollingSession) -> None:
+async def verify_long_polling(client: TelegramLongPollingClient) -> None:
     webhook_url = await client.get_webhook_url()
     if webhook_url:
         raise TelegramConfigurationError(
@@ -235,7 +258,7 @@ def _next_offset(updates: Sequence[TelegramUpdateRecord]) -> int | None:
     return max(update.update_id for update in updates) + 1
 
 
-def _setup_candidates_from_updates(
+def setup_candidates_from_updates(
     updates: Sequence[TelegramUpdateRecord],
     *,
     bot_username: str,

@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any, Iterator
 
 
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 BUSY_TIMEOUT_MS = 5_000
 
 
@@ -104,6 +104,9 @@ def _apply_migrations(connection: sqlite3.Connection) -> bool:
         if current_version < 5:
             _create_decisions(connection)
             _record_migration(connection, 5)
+        if current_version < 6:
+            _create_telegram_decision_messages(connection)
+            _record_migration(connection, 6)
         connection.commit()
     except Exception:
         connection.rollback()
@@ -404,6 +407,63 @@ def _create_decisions(connection: sqlite3.Connection) -> None:
         CREATE TRIGGER decisions_fts_delete AFTER DELETE ON decisions BEGIN
             DELETE FROM decision_fts WHERE decision_id = old.id;
         END
+        """
+    )
+
+
+def _create_telegram_decision_messages(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE approval_run_trigger_requests (
+            approval_run_id TEXT PRIMARY KEY REFERENCES runs(id),
+            decision_id TEXT NOT NULL UNIQUE REFERENCES decisions(id),
+            created_at TEXT NOT NULL,
+            requested_at TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO approval_run_trigger_requests(
+            approval_run_id, decision_id, created_at, requested_at
+        )
+        SELECT approval_run_id, id, execution_scheduled_at, NULL
+        FROM decisions
+        WHERE status = 'approved' AND approval_run_id IS NOT NULL
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX approval_run_trigger_pending_idx
+        ON approval_run_trigger_requests(created_at, approval_run_id)
+        WHERE requested_at IS NULL
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE telegram_decision_messages (
+            decision_id TEXT NOT NULL REFERENCES decisions(id),
+            chat_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            message_kind TEXT NOT NULL CHECK (
+                message_kind IN ('decision', 'details')
+            ),
+            sent_at TEXT NOT NULL,
+            PRIMARY KEY (chat_id, message_id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX telegram_decision_initial_message_idx
+        ON telegram_decision_messages(decision_id)
+        WHERE message_kind = 'decision'
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX telegram_decision_message_lookup_idx
+        ON telegram_decision_messages(decision_id, chat_id, message_id)
         """
     )
 

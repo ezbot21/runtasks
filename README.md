@@ -202,9 +202,11 @@ been removed, although it can still be rejected to close the audit record.
 
 Decision reason, validation summary, and rollback summary text participates in the
 public FTS5-backed `search` command alongside Task and Run matches. Plan evidence is
-redacted before storage and output. The current production Pi MCP adapter handler still
-performs only its bounded read-only inspection; a later handler feature supplies its
-real update plans and executes claimed approval Runs.
+redacted before storage and output. Telegram and CLI responses share this same
+transactional Decision transition: an approval can create only one claimed approval
+Run, while rejection creates no execution work. The current production Pi MCP adapter
+handler still performs only its bounded read-only inspection; a later handler feature
+supplies its real update plans and executes claimed approval Runs.
 
 Initialization creates:
 
@@ -261,13 +263,28 @@ The initial operating model is a private one-to-one chat with the bot:
    bin/runtasks --json telegram test
    ```
 
-7. Run the long-poll listener. It reports authorized `/start` checks only to the local console and does not send a Telegram response; Telegram Decision callbacks are outside this ticket:
+7. Run the long-poll listener. It reports authorized `/start` checks to the local console, sends each unmapped pending Decision with inline controls, and handles callbacks:
 
    ```bash
    bin/runtasks telegram listen
    ```
 
-Setup and listening refuse to poll while a webhook is configured. A token-keyed global lock file under the user's default `~/runtasks/var/data/` directory prevents a second runtime home from polling the same bot concurrently; other runtime files remain under the configured `RUNTASKS_HOME`. The long-running listener intentionally uses human output only; `--json` is rejected rather than emitting multiple JSON documents over its lifetime.
+   Decision messages use exactly these controls:
+
+   ```text
+   [1. APPROVE] [2. REJECT] [3. DETAILS]
+   ```
+
+   `APPROVE` commits the exact stored plan, creates at most one approval Run, and asks
+   the separately installed `runtasks-scheduler.service` one-shot runner to process it;
+   the listener never invokes a mutation handler. The wake request is retained durably
+   and retried after listener polling or restart until the one-shot adapter accepts it.
+   `REJECT` closes the Decision without
+   execution. `DETAILS` sends the expanded redacted plan evidence and repeats the same
+   controls. Repeated, conflicting, malformed, unknown, expired, or unauthorized
+   callbacks preserve a safe state and receive a current-state or error response.
+
+Setup and listening refuse to poll while a webhook is configured. A token-keyed global lock file under the user's default `~/runtasks/var/data/` directory prevents a second runtime home from polling the same bot concurrently; other runtime files remain under the configured `RUNTASKS_HOME`. The long-running listener intentionally uses human output only; `--json` is rejected rather than emitting multiple JSON documents over its lifetime. Telegram persists only the Decision-to-message identity needed to validate and audit callbacks; callback data contains a compact Decision reference and action, never a secret or full plan.
 
 ### Telegram security
 

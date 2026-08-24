@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
+from typing import cast
+
+from telegram import (
+    CallbackQuery,
+    Chat,
+    InlineKeyboardMarkup,
+    Message,
+    Update,
+    User,
+)
 
 from runtasks.notifications import (
     NotificationDeliveryError,
@@ -18,11 +30,38 @@ from runtasks.telegram import (
     load_telegram_settings,
     send_test_notification,
 )
+from runtasks.telegram_decisions import TelegramDecisionButton
+from runtasks.telegram_transport import PythonTelegramBotClient, _normalize_update
 from tests.recorded_telegram import load_recorded_updates
 from tests.telegram_fakes import FakeNotificationClient, FakeTelegramClient
 
 
 TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+
+
+class RecordingBotTransport:
+    def __init__(self) -> None:
+        self.sent: list[dict[str, object]] = []
+        self.answers: list[dict[str, object]] = []
+
+    async def __aenter__(self) -> RecordingBotTransport:
+        return self
+
+    async def __aexit__(
+        self,
+        exception_type: type[BaseException] | None,
+        exception: BaseException | None,
+        traceback: object | None,
+    ) -> None:
+        del exception_type, exception, traceback
+
+    async def send_message(self, **arguments: object) -> SimpleNamespace:
+        self.sent.append(arguments)
+        return SimpleNamespace(message_id=77)
+
+    async def answer_callback_query(self, **arguments: object) -> bool:
+        self.answers.append(arguments)
+        return True
 
 
 class TelegramIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -170,6 +209,85 @@ class TelegramIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(authorized_events, ["authorized"])
+
+    async def test_transport_sends_inline_keyboard_and_answers_callbacks(self) -> None:
+        transport = RecordingBotTransport()
+        client = PythonTelegramBotClient(TOKEN)
+        setattr(client, "_bot", transport)
+        buttons = (
+            TelegramDecisionButton("1. APPROVE", "rt1:0123456789abcdef01234567:a"),
+            TelegramDecisionButton("2. REJECT", "rt1:0123456789abcdef01234567:r"),
+            TelegramDecisionButton("3. DETAILS", "rt1:0123456789abcdef01234567:d"),
+        )
+
+        message_id = await client.send_interactive_message(
+            destination=998877665,
+            text="Redacted Decision",
+            buttons=buttons,
+        )
+        await client.answer_callback(
+            callback_id="callback-77",
+            text="Decision recorded.",
+        )
+
+        self.assertEqual(message_id, 77)
+        self.assertEqual(len(transport.sent), 1)
+        sent = transport.sent[0]
+        self.assertEqual(sent["chat_id"], 998877665)
+        self.assertEqual(sent["text"], "Redacted Decision")
+        keyboard = cast(InlineKeyboardMarkup, sent["reply_markup"])
+        rows = keyboard.inline_keyboard
+        self.assertEqual(
+            tuple((button.text, button.callback_data) for button in rows[0]),
+            tuple((button.text, button.callback_data) for button in buttons),
+        )
+        self.assertEqual(
+            transport.answers,
+            [
+                {
+                    "callback_query_id": "callback-77",
+                    "text": "Decision recorded.",
+                    "show_alert": False,
+                }
+            ],
+        )
+
+    async def test_callback_updates_preserve_only_numeric_identity_message_and_compact_data(self) -> None:
+        callback_message = Message(
+            message_id=44,
+            date=datetime.now(timezone.utc),
+            chat=Chat(id=998877665, type="private"),
+        )
+        update = Update(
+            update_id=70,
+            callback_query=CallbackQuery(
+                id="callback-70",
+                from_user=User(
+                    id=998877665,
+                    first_name="Authorized operator",
+                    is_bot=False,
+                    username="ignored_username",
+                ),
+                chat_instance="not-used-for-authorization",
+                message=callback_message,
+                data="rt1:0123456789abcdef01234567:a",
+            ),
+        )
+
+        normalized = _normalize_update(update)
+
+        self.assertIsNone(normalized.message)
+        self.assertIsNotNone(normalized.callback)
+        callback = normalized.callback
+        assert callback is not None
+        self.assertEqual(callback.callback_id, "callback-70")
+        self.assertEqual(callback.user_id, 998877665)
+        self.assertEqual(callback.chat_id, 998877665)
+        self.assertEqual(callback.chat_type, "private")
+        self.assertEqual(callback.message_id, 44)
+        self.assertEqual(callback.data, "rt1:0123456789abcdef01234567:a")
+        self.assertNotIn("ignored_username", repr(callback))
+        self.assertNotIn("not-used-for-authorization", repr(callback))
 
     async def test_test_notification_uses_a_fake_application_client_and_redacts_text(self) -> None:
         raw_client = FakeNotificationClient()
