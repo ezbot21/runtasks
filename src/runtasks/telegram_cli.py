@@ -9,18 +9,19 @@ from runtasks.notifications import (
     NotificationClient,
     NotificationDestinationError,
 )
+from runtasks.one_shot import SystemdOneShotRunTrigger
 from runtasks.paths import RuntimePaths
-from runtasks.redaction import install_redacting_log_filter
+from runtasks.redaction import Redactor, install_redacting_log_filter
 from runtasks.telegram import (
     SetupCandidate,
     TelegramConfigurationError,
     TelegramPoller,
     TelegramSettings,
     build_telegram_notification_client,
-    listen_for_authorization_checks,
     load_telegram_settings,
     send_test_notification,
 )
+from runtasks.telegram_decisions import listen_for_decisions
 from runtasks.telegram_transport import PythonTelegramBotClient
 
 
@@ -87,7 +88,12 @@ def run_telegram_command(
             raise TelegramConfigurationError(
                 "--json is not supported by the long-running Telegram listener"
             )
-        return _run_listener(paths, settings, raw_client)
+        return _run_listener(
+            paths,
+            settings,
+            raw_client,
+            Redactor.from_secret_values(all_redaction_values),
+        )
     raise TelegramConfigurationError("unknown Telegram command")
 
 
@@ -178,6 +184,7 @@ def _run_listener(
     paths: RuntimePaths,
     settings: TelegramSettings,
     raw_client: PythonTelegramBotClient,
+    redactor: Redactor,
 ) -> int:
     asyncio.run(raw_client.verify_destination(settings))
     poller = TelegramPoller(
@@ -187,11 +194,15 @@ def _run_listener(
 
     async def listen() -> None:
         async with poller.session() as session:
-            await listen_for_authorization_checks(
+            await listen_for_decisions(
                 session,
+                raw_client,
                 settings,
+                paths.database_file,
+                SystemdOneShotRunTrigger(),
+                redactor,
                 on_ready=lambda: print_text(
-                    "RunTasks Telegram authorization listener started.",
+                    "RunTasks Telegram Decision listener started.",
                     flush=True,
                 ),
                 on_authorized=lambda: print_text(

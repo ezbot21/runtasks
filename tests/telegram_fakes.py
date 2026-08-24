@@ -45,6 +45,17 @@ class FakeTelegramClient:
     async def get_webhook_url(self) -> str:
         return self.webhook_url
 
+    async def get_updates(
+        self,
+        *,
+        timeout_seconds: int,
+        offset: int | None = None,
+    ) -> list[TelegramUpdateRecord]:
+        return await self.get_updates_transport(
+            timeout_seconds=timeout_seconds,
+            offset=offset,
+        )
+
     async def get_updates_transport(
         self,
         *,

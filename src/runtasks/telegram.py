@@ -13,6 +13,11 @@ from runtasks.telegram_errors import (
     TelegramDeliveryError,
     TelegramIntegrationError,
 )
+from runtasks.telegram_decisions import (
+    TelegramDecisionButton,
+    TelegramDecisionError,
+    listen_for_decisions,
+)
 from runtasks.telegram_lock import PollerGuard
 from runtasks.telegram_transport import build_telegram_notification_client
 from runtasks.telegram_updates import (
@@ -37,6 +42,8 @@ __all__ = [
     "SetupCandidate",
     "TelegramAuthorizationContext",
     "TelegramConfigurationError",
+    "TelegramDecisionButton",
+    "TelegramDecisionError",
     "TelegramDeliveryError",
     "TelegramDestination",
     "TelegramIntegrationError",
@@ -44,6 +51,7 @@ __all__ = [
     "TelegramSettings",
     "build_telegram_notification_client",
     "listen_for_authorization_checks",
+    "listen_for_decisions",
     "load_telegram_settings",
     "send_test_notification",
 ]

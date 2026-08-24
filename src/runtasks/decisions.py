@@ -45,6 +45,12 @@ class DecisionResponse:
 
 
 @dataclass(frozen=True)
+class DecisionTransitionResult:
+    decision: Decision
+    changed: bool
+
+
+@dataclass(frozen=True)
 class Decision:
     id: str
     task_id: str
@@ -190,14 +196,14 @@ def list_decisions(path: Path) -> list[Decision]:
     return [_decision_from_row(row) for row in rows]
 
 
-def respond_to_decision(
+def transition_decision(
     path: Path,
     decision_id: str,
     action: str,
     *,
     channel: str = "cli",
     responded_by: str = "local-user",
-) -> Decision:
+) -> DecisionTransitionResult:
     target_status = _RESPONSE_TARGETS.get(action)
     if target_status is None:
         raise DecisionTransitionError("Decision response is invalid")
@@ -223,7 +229,10 @@ def respond_to_decision(
             if stored_response is not None:
                 if str(stored_response) == action:
                     connection.commit()
-                    return _decision_from_row(row)
+                    return DecisionTransitionResult(
+                        decision=_decision_from_row(row),
+                        changed=False,
+                    )
                 raise DecisionTransitionError(
                     f"Decision cannot transition from {current_status} to {target_status}"
                 )
@@ -265,6 +274,14 @@ def respond_to_decision(
                         ),
                     ),
                 )
+                connection.execute(
+                    """
+                    INSERT INTO approval_run_trigger_requests(
+                        approval_run_id, decision_id, created_at
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (approval_run_id, decision_id, responded_at),
+                )
 
             cursor = connection.execute(
                 """
@@ -295,7 +312,83 @@ def respond_to_decision(
         raise
     except sqlite3.Error as error:
         raise DecisionError("Decision response could not be recorded") from error
-    return get_decision(path, decision_id)
+    return DecisionTransitionResult(
+        decision=get_decision(path, decision_id),
+        changed=True,
+    )
+
+
+def respond_to_decision(
+    path: Path,
+    decision_id: str,
+    action: str,
+    *,
+    channel: str = "cli",
+    responded_by: str = "local-user",
+) -> Decision:
+    """Preserve the Decision-only interface used by CLI callers."""
+    return transition_decision(
+        path,
+        decision_id,
+        action,
+        channel=channel,
+        responded_by=responded_by,
+    ).decision
+
+
+def list_pending_approval_run_triggers(path: Path) -> list[str]:
+    try:
+        with _decision_connection(path) as connection:
+            rows = connection.execute(
+                """
+                SELECT approval_run_id
+                FROM approval_run_trigger_requests
+                WHERE requested_at IS NULL
+                ORDER BY created_at, approval_run_id
+                """
+            ).fetchall()
+    except DecisionError:
+        raise
+    except sqlite3.Error as error:
+        raise DecisionError(
+            "approval Run trigger requests could not be listed"
+        ) from error
+    return [str(row["approval_run_id"]) for row in rows]
+
+
+def mark_approval_run_trigger_requested(
+    path: Path,
+    approval_run_id: str,
+) -> bool:
+    try:
+        with _decision_connection(path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT created_at FROM approval_run_trigger_requests
+                WHERE approval_run_id = ?
+                """,
+                (approval_run_id,),
+            ).fetchone()
+            if row is None:
+                raise DecisionError("approval Run trigger request does not exist")
+            requested_at = _response_timestamp(str(row["created_at"]))
+            cursor = connection.execute(
+                """
+                UPDATE approval_run_trigger_requests
+                SET requested_at = ?
+                WHERE approval_run_id = ? AND requested_at IS NULL
+                """,
+                (requested_at, approval_run_id),
+            )
+            connection.commit()
+    except DecisionError:
+        raise
+    except sqlite3.Error as error:
+        raise DecisionError(
+            "approval Run trigger request could not be recorded"
+        ) from error
+    return cursor.rowcount == 1
 
 
 def search_decisions(path: Path, query: str) -> list[Decision]:
