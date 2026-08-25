@@ -463,6 +463,7 @@ class InstallationFixture:
         self.environment = {
             "HOME": str(self.user_home),
             "PATH": str(self.fake_bin),
+            "XDG_CONFIG_HOME": str(self.user_home / ".config"),
             "RUNTASKS_APPLICATION_ROOT": str(self.runtime_home),
             "RUNTASKS_TEST_COMMAND_LOG": str(self.command_log),
         }
