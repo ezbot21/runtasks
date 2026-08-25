@@ -22,11 +22,12 @@ dist/
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
+*.sqlite3.lock
 *.log
 *.bak
 var/data/*
 var/logs/*
-var/backups/*
+**/var/backups/*
 
 # Retain runtime directory placeholders
 !var/data/.gitkeep

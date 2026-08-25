@@ -23,7 +23,7 @@ from runtasks.secrets import (
 )
 
 
-TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"  # release-check: allow-fake-secret
 
 
 class RedactionTests(unittest.TestCase):
@@ -43,6 +43,7 @@ class RedactionTests(unittest.TestCase):
                 "API_KEY": "xy",
                 "ORDINARY_SETTING": "ordinary-environment-value",
                 "PRIVATE_PIN": "123456",
+                "RUNTASKS_APPLICATION_ROOT": "/displayed/user/home/runtasks",
                 "RUNTASKS_TELEGRAM_BOT_TOKEN": TOKEN,
                 "SHORT_VALUE": "1",
                 "TRUE_SETTING": "true",
@@ -53,11 +54,13 @@ class RedactionTests(unittest.TestCase):
         self.assertEqual(values["RUNTASKS_TELEGRAM_BOT_TOKEN"], TOKEN)
         self.assertNotIn("AWS_SECRET_ACCESS_KEY", values)
         self.assertNotIn("ORDINARY_SETTING", values)
+        self.assertNotIn("RUNTASKS_APPLICATION_ROOT", values)
         self.assertIn("aws-private-value", redaction_values)
         self.assertIn("xy", redaction_values)
         self.assertIn("ordinary-environment-value", redaction_values)
         self.assertIn("123456", redaction_values)
         self.assertNotIn("/displayed/user/home", redaction_values)
+        self.assertNotIn("/displayed/user/home/runtasks", redaction_values)
         self.assertIn("1", redaction_values)
         self.assertNotIn("true", redaction_values)
         self.assertNotIn(
@@ -119,7 +122,7 @@ class RedactionTests(unittest.TestCase):
             "password = spaced-secret {\"password\":\"json-secret\"} "
             "Authorization: Bearer bearer-secret "
             "Authorization = Bearer equals-bearer "
-            "-----BEGIN PRIVATE KEY-----\nprivate-key-body\n"
+            "-----BEGIN PRIVATE KEY-----\nprivate-key-body\n"  # release-check: allow-fake-secret
             "-----END PRIVATE KEY----- "
             f"https://user:password@example.test/path?q={TOKEN} "
             f"ssh://user:credential@example.test/private/key "

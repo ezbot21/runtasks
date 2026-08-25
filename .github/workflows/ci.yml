@@ -41,11 +41,47 @@ jobs:
       - name: Sync locked environment
         run: uv sync --locked
 
-      - name: Run tests
-        run: uv run python -m unittest discover -s tests -v
+      - name: Run linting
+        run: uv run ruff check .
 
-      - name: Run mypy
+      - name: Run type checking
         run: uv run mypy
+
+      - name: Scan tracked release files for secrets and portability failures
+        run: uv run python -m runtasks.release_checks
+
+      - name: Run unit and external-boundary contract tests
+        run: >-
+          uv run python -m unittest -v
+          tests.test_execution_contracts
+          tests.test_pi_mcp_release_adapters
+          tests.test_pi_mcp_release_check
+          tests.test_redaction
+          tests.test_telegram_config
+          tests.test_telegram_integration
+          tests.test_telegram_lock
+
+      - name: Run CLI subprocess and behavior tests
+        run: >-
+          uv run python -m unittest -v
+          tests.test_backup_restore_cli
+          tests.test_cli
+          tests.test_decisions_cli
+          tests.test_installation_cli
+          tests.test_pi_mcp_handler_cli
+          tests.test_pi_mcp_update_execution
+          tests.test_runs_cli
+          tests.test_runtasks_skill
+          tests.test_scheduler_cli
+          tests.test_tasks_cli
+          tests.test_telegram_cli
+          tests.test_telegram_decisions
+
+      - name: Run public-release capability checks
+        run: uv run python -m unittest -v tests.test_release_checks
+
+      - name: Run safe end-to-end update and rollback suite
+        run: uv run python -m unittest -v tests.test_end_to_end_release
 
       - name: Check pull request diff
         if: github.event_name == 'pull_request'

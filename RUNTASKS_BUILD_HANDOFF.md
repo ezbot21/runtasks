@@ -44,7 +44,7 @@ The new Pi session should read that source document completely before implementi
 
 - Files outside `~/runtasks/` must have names that clearly relate to RunTasks.
 - `RUNTASKS_HOME` relocates configuration, databases, logs, backups, and other runtime-specific state. The sole exception is the non-secret, token-hash Telegram poller lock under the OS account's canonical `~/runtasks/var/data/` directory. That lock must remain account-global so two runtime homes cannot long-poll the same bot concurrently; tests inject a temporary global lock directory.
-- Do not hardcode `/home/kai`; use:
+- Do not hardcode a developer-specific absolute home path; use:
   - `~/` in user-facing documentation and shell examples
   - `Path.home()` in Python for runtime-specific paths; the ADR-0001 Telegram coordination lock uses the OS account's canonical home so changing `HOME` cannot split the lock
   - `%h` in systemd unit files
@@ -1187,7 +1187,7 @@ The first usable release is complete when all of the following pass.
 
 ### Public repository
 
-- [ ] No `/home/kai` hardcoding exists.
+- [ ] No developer-specific absolute home path exists.
 - [ ] `.env` is ignored and `.env.example` contains placeholders only.
 - [ ] Database/logs/backups are ignored.
 - [ ] Systemd files use `%h` and `runtasks-` naming.

@@ -2,6 +2,8 @@
 set -eu
 
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+RUNTASKS_APPLICATION_ROOT=${RUNTASKS_APPLICATION_ROOT:-$PROJECT_ROOT}
+export RUNTASKS_APPLICATION_ROOT
 
 if ! command -v uv >/dev/null 2>&1; then
     echo "RunTasks requires uv 0.12.5; install uv and run 'uv sync --locked'." >&2

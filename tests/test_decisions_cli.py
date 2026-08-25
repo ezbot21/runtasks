@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from datetime import datetime
 import hashlib
 import json
@@ -99,6 +100,7 @@ class DecisionCliTests(unittest.TestCase):
                 "evidence",
                 {
                     "release": "Security and OAuth correction",
+                    "reference": "https://example.invalid/releases/security-oauth",
                     "private_note": private_value,
                     private_value: "Secret-bearing evidence key was redacted.",
                 },
@@ -273,6 +275,76 @@ class DecisionCliTests(unittest.TestCase):
             self.assertEqual(len(decisions), 2)
             self.assertEqual(decisions[0]["plan"], decisions[1]["plan"])
             self.assertEqual(decisions[0]["plan_hash"], decisions[1]["plan_hash"])
+
+    def test_plan_hash_changes_for_every_authorized_plan_dimension(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "runtime-home"
+            request_log = Path(directory) / "handler-requests.jsonl"
+            self.initialize(home)
+            task = self.add_approved_task(home)
+            environment = self.decision_environment(request_log)
+            baseline = json.loads(environment["RUNTASKS_FIXTURE_HANDLER_OUTCOME"])
+            variants: list[tuple[str, dict[str, Any]]] = [("baseline", baseline)]
+
+            target_changed = copy.deepcopy(baseline)
+            target_changed["decision"]["plan"]["parameters"][
+                "target_version"
+            ] = "2.27.1"
+            variants.append(("authorized-version", target_changed))
+
+            operation_changed = copy.deepcopy(baseline)
+            operation_changed["decision"]["plan"][
+                "operation"
+            ] = "install-reviewed-exact-version"
+            variants.append(("operation", operation_changed))
+
+            evidence_changed = copy.deepcopy(baseline)
+            evidence_changed["decision"]["plan"]["evidence"][
+                "reference"
+            ] = "https://example.invalid/releases/security-oauth-revised"
+            variants.append(("evidence-reference", evidence_changed))
+
+            validation_changed = copy.deepcopy(baseline)
+            validation_changed["decision"]["plan"]["validation"][
+                "expected_result"
+            ] = "MCP_ADAPTER_REVIEWED_OK"
+            variants.append(("validation-expectation", validation_changed))
+
+            rollback_changed = copy.deepcopy(baseline)
+            rollback_changed["decision"]["plan"]["rollback"][
+                "target_version"
+            ] = "2.26.0"
+            variants.append(("rollback-target", rollback_changed))
+
+            hashes: dict[str, str] = {}
+            for name, outcome in variants:
+                variant_environment = dict(environment)
+                variant_environment["RUNTASKS_FIXTURE_HANDLER_OUTCOME"] = json.dumps(
+                    outcome
+                )
+                executed = self.run_cli(
+                    home,
+                    "run",
+                    str(task["id"]),
+                    "--json",
+                    extra_environment=variant_environment,
+                )
+                self.assertEqual(executed.returncode, 0, executed.stderr)
+                decision_id = json.loads(executed.stdout)["run"]["details"][
+                    "decision_id"
+                ]
+                shown = self.run_cli(
+                    home,
+                    "decision",
+                    "show",
+                    decision_id,
+                    "--json",
+                    extra_environment=variant_environment,
+                )
+                hashes[name] = json.loads(shown.stdout)["decision"]["plan_hash"]
+
+            self.assertEqual(len(hashes), len(variants))
+            self.assertEqual(len(set(hashes.values())), len(variants))
 
     def test_invalid_decision_request_fails_the_run_without_partial_decision_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

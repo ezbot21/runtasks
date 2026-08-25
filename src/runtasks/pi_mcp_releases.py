@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import re
 from typing import Mapping, Protocol, cast
@@ -87,8 +88,22 @@ class NormalizedSourceEvidence:
         return {
             "body": self.body,
             "reference": self.reference,
+            "reference_fingerprint": _reference_fingerprint(self.reference),
             "source": self.source,
             "title": self.title,
+        }
+
+
+@dataclass(frozen=True)
+class ReleaseSourceReference:
+    source: str
+    reference: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "reference": self.reference,
+            "reference_fingerprint": _reference_fingerprint(self.reference),
+            "source": self.source,
         }
 
 
@@ -134,6 +149,7 @@ class ReleaseCheckResult:
     assessment: ImportanceAssessment | None
     evidence: tuple[NormalizedRelease, ...]
     source_failures: tuple[str, ...] = ()
+    source_references: tuple[ReleaseSourceReference, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -146,6 +162,9 @@ class ReleaseCheckResult:
             "installed_version": self.installed_version,
             "outcome": self.outcome,
             "source_failures": list(self.source_failures),
+            "source_references": [
+                reference.as_dict() for reference in self.source_references
+            ],
         }
 
 
@@ -186,6 +205,9 @@ class PiMcpReleaseChecker:
         self._installed_versions = installed_versions
         self._registry = registry
         self._release_sources = release_sources
+        self._source_references = tuple(
+            _validated_source_reference(source) for source in release_sources
+        )
         self._evaluator = evaluator
 
     def check(self, importance_context: Mapping[str, object]) -> ReleaseCheckResult:
@@ -198,6 +220,7 @@ class PiMcpReleaseChecker:
                 available_version=None,
                 reason="Installed Pi MCP adapter metadata could not be validated.",
                 source_failures=("installed-package-metadata",),
+                source_references=self._source_references,
             )
 
         try:
@@ -218,6 +241,7 @@ class PiMcpReleaseChecker:
                 available_version=None,
                 reason="The package registry stable release metadata could not be validated.",
                 source_failures=("package-registry",),
+                source_references=self._source_references,
             )
 
         if installed_version == latest_version:
@@ -227,6 +251,7 @@ class PiMcpReleaseChecker:
                 available_version=str(latest_version),
                 assessment=None,
                 evidence=(),
+                source_references=self._source_references,
             )
 
         intervening = tuple(
@@ -240,6 +265,7 @@ class PiMcpReleaseChecker:
                 available_version=str(latest_version),
                 reason="The registry did not provide every intervening stable release.",
                 source_failures=("package-registry-intervening-releases",),
+                source_references=self._source_references,
             )
 
         releases, source_failures = self._collect_release_evidence(intervening)
@@ -259,6 +285,7 @@ class PiMcpReleaseChecker:
                 ),
                 evidence=releases,
                 source_failures=assessment_failures,
+                source_references=self._source_references,
             )
 
         evaluation_evidence = EvaluationEvidence(
@@ -284,9 +311,10 @@ class PiMcpReleaseChecker:
                 ),
                 evidence=releases,
                 source_failures=("importance-evaluator",),
+                source_references=self._source_references,
             )
 
-        if assessment.confidence == "low" or (
+        if (
             assessment.importance == "non-important"
             and assessment.confidence != "high"
         ):
@@ -299,6 +327,7 @@ class PiMcpReleaseChecker:
                 ),
                 evidence=releases,
                 source_failures=("low-confidence-assessment",),
+                source_references=self._source_references,
             )
 
         outcome = (
@@ -312,6 +341,7 @@ class PiMcpReleaseChecker:
             available_version=str(latest_version),
             assessment=assessment,
             evidence=releases,
+            source_references=self._source_references,
         )
 
     def _collect_release_evidence(
@@ -401,6 +431,22 @@ def _validated_stable_versions(values: tuple[str, ...]) -> tuple[_SemanticVersio
     if len({version.original for version in parsed}) != len(parsed):
         raise ReleaseCheckError("registry stable versions contain duplicates")
     return tuple(sorted(parsed, key=lambda version: version.precedence))
+
+
+def _validated_source_reference(source: ReleaseSource) -> ReleaseSourceReference:
+    name = source.name.strip()
+    reference = source.reference.strip()
+    if not name or len(name) > 1_000:
+        raise ValueError("release source name is invalid")
+    if not reference or len(reference) > 2_000:
+        raise ValueError("release source reference is invalid")
+    return ReleaseSourceReference(source=name, reference=reference)
+
+
+def _reference_fingerprint(reference: str) -> str:
+    # Redaction may hide URL query or fragment values. Preserve a one-way
+    # identity so the Decision hash still changes when that reference does.
+    return hashlib.sha256(reference.encode("utf-8")).hexdigest()
 
 
 def _normalize_source_note(
@@ -503,6 +549,7 @@ def _uncertain_result(
     reason: str,
     evidence: tuple[NormalizedRelease, ...] = (),
     source_failures: tuple[str, ...],
+    source_references: tuple[ReleaseSourceReference, ...],
 ) -> ReleaseCheckResult:
     return ReleaseCheckResult(
         outcome="decision-required",
@@ -517,4 +564,5 @@ def _uncertain_result(
         ),
         evidence=evidence,
         source_failures=source_failures,
+        source_references=source_references,
     )

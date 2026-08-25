@@ -13,17 +13,61 @@ RunTasks is a portable Python application for durable, reviewed operational task
 ```bash
 uv sync --locked
 uv run runtasks status
-uv run python -m unittest discover -s tests -v
+uv run ruff check .
 uv run mypy
+uv run python -m runtasks.release_checks
+uv run python -m unittest discover -s tests -v
 ```
 
 All project, runtime, and development dependencies are exactly resolved in `uv.lock`. The pinned `tzdata` runtime dependency keeps IANA timezone validation portable on systems without an operating-system timezone database.
+
+## Documentation
+
+- [Operator guide](docs/operator-guide.md): install, uninstall, configuration, Agent Skill discovery, scheduler and Telegram operation, backup/restore, token rotation, and troubleshooting.
+- [Security model](docs/security.md): secret handling, redaction guarantees, approval boundaries, threat boundaries, and critical recovery.
+- [Pi MCP adapter handler](docs/pi-mcp-handler.md): 14-day policy, importance and uncertainty, exact approval, update validation, rollback, and quiet non-important behavior.
+- [Public-release verification](docs/release-verification.md): clean-checkout gates, FTS5 and systemd checks, fake Telegram authorization, and complete fake update/rollback proof.
 
 ## Agent Skill
 
 The canonical standards-compatible Agent Skill is available directly from the repository at [`skills/runtasks/SKILL.md`](skills/runtasks/SKILL.md). It extracts one or more Task proposals from conversation context, documents, pasted text, direct instructions, or existing Tasks. Each proposal is staged as a hash-checked review and shows its full policy and assumptions before asking for `YES`, `NO`, or `EDIT`; only an explicit `YES` can invoke `task add` or `task update` with the exact reviewed payload.
 
-Global cross-agent discovery installation is intentionally handled by a later feature. Until then, load or invoke the canonical skill from this repository in any Agent Skills-compatible harness.
+`runtasks install` exposes this one canonical source through both `~/.agents/skills/runtasks` (Pi, Codex, and OpenCode) and `~/.claude/skills/runtasks` (Claude Code). The installer launches every supported agent executable found on the local `PATH` in an isolated temporary home and verifies that the agent actually discovers the skill. It uses symlinks when supported and replaces a managed discovery link with a documented managed-copy fallback when an installed harness does not follow symlinks.
+
+## User installation
+
+On Linux systems with a systemd user manager, install the runtime, persistent scheduler, Telegram listener, and cross-agent skill discovery with:
+
+```bash
+bin/runtasks install
+bin/runtasks install --json
+```
+
+Installation is idempotent. Before enabling anything it asks the installed `systemd-analyze` to validate the exact calendar expression `*-*-* 09:00:00 Asia/Singapore`. It then manages only these clearly named user units under `~/.config/systemd/user/`:
+
+```text
+runtasks-scheduler.service  one-shot `runtasks run-due` runner
+runtasks-scheduler.timer    persistent daily 09:00 Asia/Singapore wake
+runtasks-telegram.service   long-poll listener with Restart=on-failure
+```
+
+Generated units use systemd `%h` expansion for the application executable, runtime working directory, and user-owned executable directories captured from the validated installer `PATH`; no username or literal home path is embedded. The Telegram listener records approvals and requests the separate `runtasks-scheduler.service`; it never executes approved mutations directly.
+
+The application and `RUNTASKS_HOME` must both be under the current user's home so the generated units can remain portable. Missing systemd tooling, an unavailable systemd user manager, an invalid calendar expression, an unavailable canonical skill, an unmanaged conflicting unit/link, or failed installed-agent discovery is reported as a validation error before the timer or listener is enabled.
+
+Remove only managed units and discovery entries with:
+
+```bash
+bin/runtasks uninstall
+```
+
+By default uninstallation preserves `config/`, `.env`, the SQLite database, logs, and backups. Remove those runtime data paths only with the explicit destructive option:
+
+```bash
+bin/runtasks uninstall --remove-data
+```
+
+Source code, the canonical skill, unrelated user units or skill directories, and account-global Telegram poller lock files are never removed by `--remove-data`.
 
 ## Runtime home
 
@@ -98,8 +142,8 @@ IANA `zoneinfo` names and default to `Asia/Singapore` when omitted. Human and JS
 Task output includes the next due time in the Task's configured timezone. Supported action
 modes are `check`, `notify`, and `approved-procedure`. The bounded handler registry
 currently accepts `manual_notification` for `notify` Tasks and `pi_mcp_adapter` for
-`check` or `approved-procedure` Tasks. Handler execution is added separately; Task
-registration never interprets policy prose as a command.
+`check` or `approved-procedure` Tasks. Task registration never interprets policy prose
+as a command; only the registered handler's reviewed implementation can execute.
 
 Task updates are partial replacements of the supplied fields and preserve the Task
 ID and creation timestamp. Disabled Tasks remain visible and are explicitly marked
@@ -116,11 +160,12 @@ update-oriented duplicate outcome rather than inserting another Task.
 ## Daily scheduler
 
 `runtasks run-due` is the single scheduler entry point. It does not depend on
-systemd: any daily wake mechanism may invoke it. The command takes one scheduler
-current time, selects enabled Tasks with `next_run_at` at or before that time, and
-claims each due occurrence in SQLite before invoking its named handler. The claim and
-Task advancement commit in the same transaction, and a unique scheduled-occurrence
-constraint prevents competing processes from claiming the same occurrence.
+systemd: any daily wake mechanism or approval-triggered one-shot service may invoke it.
+The command first claims approved execution Runs, then takes one scheduler current time,
+selects enabled Tasks with `next_run_at` at or before that time, and claims each due
+occurrence in SQLite before invoking its named handler. Claims commit before external
+work begins. Unique scheduled-occurrence and approval-Run state constraints prevent
+competing processes from executing the same work twice.
 
 Each Task advances by its own local-calendar interval using Python `zoneinfo`; a
 14-day Task therefore remains fortnightly behind a daily wake. A local wall time that
@@ -162,7 +207,15 @@ The current execution modes are deliberately bounded:
   user's `~/.pi/agent`), queries npm's stable `latest` dist-tag using Pi's configured
   `npmCommand`, gathers every intervening version from GitHub Releases and the project
   changelog, and sends normalized evidence to a tool-disabled, ephemeral Pi evaluator.
-  It never runs `pi install`, restarts a service, or changes the exact package pin.
+  This check phase never runs `pi install`, restarts a service, or changes the exact
+  package pin.
+- A separately claimed `approval` Run for the same handler reloads the immutable plan,
+  verifies its SHA-256 hash and registered Task, reconfirms the exact old installed
+  version, installs only `npm:pi-mcp-adapter@<approved-version>`, and verifies package
+  metadata before restarting `pi-web.service`. It then requires an unambiguous healthy
+  user-service state and exact `MCP_ADAPTER_OK` output from a fresh Pi MCP validation
+  process. Only after every check succeeds does it record success, complete the
+  Decision, and send the redacted operator notification.
 
 A same-version result records `no-change`. A high-confidence assessment covering only
 routine features, documentation, refactoring, or irrelevant fixes records
@@ -216,9 +269,17 @@ public FTS5-backed `search` command alongside Task and Run matches. Plan evidenc
 redacted before storage and output. Telegram and CLI responses share this same
 transactional Decision transition: an approval can create only one claimed approval
 Run, while rejection creates no execution work. The production Pi MCP adapter handler
-now supplies real read-only release assessments and immutable exact-version update
-plans. Execution of claimed approval Runs, package mutation, restart validation, and
-rollback remain separate later work; this handler never performs them during a check.
+supplies real read-only release assessments and immutable exact-version update plans.
+`run-due` executes a claimed approved plan at most once, records ordered redacted step
+outcomes, and exposes a successful Decision as `completed`. A stale old-version
+precondition supersedes the approved Decision before mutation and makes the Task due
+immediately so the normal read-only check creates a fresh assessment and Decision path.
+Failures before package mutation do not roll back. Failures after mutation reinstall the
+exact authorized old pin, restart and health-check Pi Web, and repeat the fresh
+`MCP_ADAPTER_OK` validation. Verified recovery is recorded as `rolled-back`; failed or
+ambiguous recovery is a distinct `rollback-failed` Decision outcome. Both recovery
+outcomes send durable urgent redacted notifications, and interrupted mutation or
+rollback phases are reconciled without repeating package installation.
 
 Initialization creates:
 
@@ -229,7 +290,53 @@ Initialization creates:
 ~/runtasks/var/backups/
 ```
 
-The command is idempotent. SQLite foreign keys and a five-second busy timeout are enabled on every application connection. WAL mode is requested where the SQLite build supports it, and initialization fails safely if FTS5 is unavailable.
+The command is idempotent. SQLite foreign keys and a five-second busy timeout are enabled on every application connection. WAL mode is requested where the SQLite build supports it, and initialization fails safely if FTS5 is unavailable. When an existing database needs migration or a journal-mode change, `init` first creates and verifies an online SQLite backup; a backup failure aborts initialization before the database is modified.
+
+## Backup and restore
+
+Create an online backup while RunTasks remains available for normal reads and writes:
+
+```bash
+bin/runtasks backup
+bin/runtasks backup --json
+```
+
+Backups use SQLite's online backup API and are written privately under
+`<RUNTASKS_HOME>/var/backups/`. Each artifact has a matching JSON metadata file;
+keep the `.sqlite3` and `.json` files together when moving a backup. Their names and
+metadata identify the UTC creation time, source schema version, and SHA-256 artifact
+checksum without copying Task policy text into metadata. Every backup is checked for SQLite integrity, foreign-key
+consistency, supported schema, and the FTS tables expected by that schema before it is
+published. Retention runs after every successful backup and keeps at most 14 verified
+daily artifacts, using the backup most recently created by the operation as that UTC
+day's snapshot. Unknown, malformed, orphaned, corrupt, or unverifiable files are left
+untouched rather than deleted speculatively; only verified backups safely outside the
+daily retention set are removed.
+
+Restore always stages a fresh SQLite database, validates the backed-up schema, applies
+supported migrations only to that staging database, enables WAL, and then revalidates
+integrity, foreign keys, the current schema, and FTS before changing live state. Merely
+naming a backup is not sufficient: replacing the live registry requires the explicit
+`--replace-live` operator action.
+
+```bash
+# Stop RunTasks listeners and schedulers first.
+RUNTASKS_HOME=~/runtasks-restored \
+  bin/runtasks restore /safe/path/runtasks-backup-v6-20260901T010000.000000Z.sqlite3 \
+  --replace-live
+
+RUNTASKS_HOME=~/runtasks-restored \
+  bin/runtasks restore /safe/path/runtasks-backup-v6-20260901T010000.000000Z.sqlite3 \
+  --replace-live --json
+```
+
+A fresh `RUNTASKS_HOME` receives the normal private runtime layout and default
+configuration. When replacing an existing live database, restore acquires exclusive
+RunTasks database access and refuses to proceed while another RunTasks connection is
+open. It then creates a verified safety backup of the locked live state. Any source
+validation, staging, lock, safety backup, checkpoint, or destination failure returns
+nonzero and leaves the live database in place. After success, use `status`, `task list`,
+`history`, `decisions`, and `search` to inspect the restored user-visible state.
 
 ## Configuration
 
@@ -302,15 +409,18 @@ Setup and listening refuse to poll while a webhook is configured. A token-keyed 
 
 Telegram bot chats are **not end-to-end encrypted**. Never send tokens, credentials, environment files, private keys, or unredacted logs through the bot. RunTasks redacts configured private values and sensitive URL components from outbound notifications and reports integration failures without echoing Telegram responses.
 
-Use only numeric user and chat IDs for authorization, keep the bot in a private DM for the initial deployment, and enable two-factor authentication on the operator's Telegram account. If the BotFather token appears in a terminal capture, log, chat, issue, or commit, rotate it immediately through `@BotFather`, update `~/runtasks/.env`, and restart the listener. Telegram credentials and IDs are loaded from private configuration and are never stored in SQLite.
+Use only numeric user and chat IDs for authorization, keep the bot in a private DM for the initial deployment, and enable two-factor authentication on the operator's Telegram account. If the BotFather token appears in a terminal capture, log, chat, issue, or commit, rotate it immediately through `@BotFather`, update `~/runtasks/.env`, and restart the listener. The bot token and configured authorization allowlists are not copied into SQLite. Decision audit records necessarily retain the numeric responding user identity plus the mapped chat and message IDs.
 
 ## Testing safely
 
 Behavior tests execute `bin/runtasks` in subprocesses with a temporary `RUNTASKS_HOME`. Telegram tests use recorded Bot API update fixtures and fake notification clients; they never contact Telegram or inspect the operator's real home:
 
 ```bash
-python -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests -v
+uv run python -m unittest tests.test_end_to_end_release -v
 ```
+
+The end-to-end release suite advances an explicit fake clock and exercises fake release discovery, Telegram approval, exact update, success validation, exact rollback, critical failed rollback, and FTS history search. It never calls real Pi, systemd, npm, GitHub, package installation, networks, or Telegram.
 
 ## License
 

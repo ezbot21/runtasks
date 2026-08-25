@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from runtasks.adapters import ExternalAdapterError, normalize_external_outcome
+from runtasks.one_shot import SystemdOneShotRunTrigger
 from runtasks.redaction import Redactor
 
 
@@ -51,13 +52,40 @@ class ExternalAdapterContractTests(unittest.TestCase):
                     normalize_external_outcome(outcome, Redactor())
 
 
+class RecordingSystemdOneShotRunTrigger(SystemdOneShotRunTrigger):
+    def __init__(self, results: list[int]) -> None:
+        super().__init__(timeout_seconds=2)
+        self._results = list(results)
+        self.calls: list[tuple[str, ...]] = []
+
+    async def _run_systemctl(self, *arguments: str) -> int:
+        self.calls.append(arguments)
+        return self._results.pop(0)
+
+
+class OneShotRunTriggerContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_waits_for_active_scheduler_before_queueing_a_fresh_run(self) -> None:
+        trigger = RecordingSystemdOneShotRunTrigger([0, 3, 0])
+
+        await trigger.request()
+
+        self.assertEqual(
+            trigger.calls,
+            [
+                ("is-active", "--quiet", "runtasks-scheduler.service"),
+                ("is-active", "--quiet", "runtasks-scheduler.service"),
+                ("start", "--no-block", "runtasks-scheduler.service"),
+            ],
+        )
+
+
 class RedactionContractTests(unittest.TestCase):
     def test_redaction_recurses_and_covers_common_credential_shapes(self) -> None:
         redactor = Redactor.from_secret_values(["configured-private-value"])
 
         redacted = redactor.value(
             {
-                "message": "configured-private-value ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+                "message": "configured-private-value ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",  # release-check: allow-fake-secret
                 "configured-private-value": "evidence-key-secret",
                 "nested": [
                     {"access_token": "anything", "api_key": "short-value"},
