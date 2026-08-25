@@ -133,8 +133,8 @@ IANA `zoneinfo` names and default to `Asia/Singapore` when omitted. Human and JS
 Task output includes the next due time in the Task's configured timezone. Supported action
 modes are `check`, `notify`, and `approved-procedure`. The bounded handler registry
 currently accepts `manual_notification` for `notify` Tasks and `pi_mcp_adapter` for
-`check` or `approved-procedure` Tasks. Handler execution is added separately; Task
-registration never interprets policy prose as a command.
+`check` or `approved-procedure` Tasks. Task registration never interprets policy prose
+as a command; only the registered handler's reviewed implementation can execute.
 
 Task updates are partial replacements of the supplied fields and preserve the Task
 ID and creation timestamp. Disabled Tasks remain visible and are explicitly marked
@@ -151,11 +151,12 @@ update-oriented duplicate outcome rather than inserting another Task.
 ## Daily scheduler
 
 `runtasks run-due` is the single scheduler entry point. It does not depend on
-systemd: any daily wake mechanism may invoke it. The command takes one scheduler
-current time, selects enabled Tasks with `next_run_at` at or before that time, and
-claims each due occurrence in SQLite before invoking its named handler. The claim and
-Task advancement commit in the same transaction, and a unique scheduled-occurrence
-constraint prevents competing processes from claiming the same occurrence.
+systemd: any daily wake mechanism or approval-triggered one-shot service may invoke it.
+The command first claims approved execution Runs, then takes one scheduler current time,
+selects enabled Tasks with `next_run_at` at or before that time, and claims each due
+occurrence in SQLite before invoking its named handler. Claims commit before external
+work begins. Unique scheduled-occurrence and approval-Run state constraints prevent
+competing processes from executing the same work twice.
 
 Each Task advances by its own local-calendar interval using Python `zoneinfo`; a
 14-day Task therefore remains fortnightly behind a daily wake. A local wall time that
@@ -197,7 +198,15 @@ The current execution modes are deliberately bounded:
   user's `~/.pi/agent`), queries npm's stable `latest` dist-tag using Pi's configured
   `npmCommand`, gathers every intervening version from GitHub Releases and the project
   changelog, and sends normalized evidence to a tool-disabled, ephemeral Pi evaluator.
-  It never runs `pi install`, restarts a service, or changes the exact package pin.
+  This check phase never runs `pi install`, restarts a service, or changes the exact
+  package pin.
+- A separately claimed `approval` Run for the same handler reloads the immutable plan,
+  verifies its SHA-256 hash and registered Task, reconfirms the exact old installed
+  version, installs only `npm:pi-mcp-adapter@<approved-version>`, and verifies package
+  metadata before restarting `pi-web.service`. It then requires an unambiguous healthy
+  user-service state and exact `MCP_ADAPTER_OK` output from a fresh Pi MCP validation
+  process. Only after every check succeeds does it record success, complete the
+  Decision, and send the redacted operator notification.
 
 A same-version result records `no-change`. A high-confidence assessment covering only
 routine features, documentation, refactoring, or irrelevant fixes records
@@ -251,9 +260,17 @@ public FTS5-backed `search` command alongside Task and Run matches. Plan evidenc
 redacted before storage and output. Telegram and CLI responses share this same
 transactional Decision transition: an approval can create only one claimed approval
 Run, while rejection creates no execution work. The production Pi MCP adapter handler
-now supplies real read-only release assessments and immutable exact-version update
-plans. Execution of claimed approval Runs, package mutation, restart validation, and
-rollback remain separate later work; this handler never performs them during a check.
+supplies real read-only release assessments and immutable exact-version update plans.
+`run-due` executes a claimed approved plan at most once, records ordered redacted step
+outcomes, and exposes a successful Decision as `completed`. A stale old-version
+precondition supersedes the approved Decision before mutation and makes the Task due
+immediately so the normal read-only check creates a fresh assessment and Decision path.
+Failures before package mutation do not roll back. Failures after mutation reinstall the
+exact authorized old pin, restart and health-check Pi Web, and repeat the fresh
+`MCP_ADAPTER_OK` validation. Verified recovery is recorded as `rolled-back`; failed or
+ambiguous recovery is a distinct `rollback-failed` Decision outcome. Both recovery
+outcomes send durable urgent redacted notifications, and interrupted mutation or
+rollback phases are reconciled without repeating package installation.
 
 Initialization creates:
 

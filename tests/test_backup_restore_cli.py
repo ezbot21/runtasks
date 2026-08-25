@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from runtasks.backups import BackupError, create_backup, restore_backup
 from runtasks.database import (
+    LATEST_SCHEMA_VERSION,
     DatabaseError,
     database_connection,
     initialize_database,
@@ -25,6 +26,10 @@ from tests.cli_test_support import run_cli
 class BackupRestoreCliTests(unittest.TestCase):
     def downgrade_to_schema_two(self, database_path: Path) -> None:
         with sqlite3.connect(database_path) as connection:
+            connection.execute("DROP TABLE pi_mcp_execution_recovery")
+            connection.execute("DROP TABLE decision_execution_outcomes")
+            connection.execute("DROP TABLE decision_execution_fts")
+            connection.execute("DROP TABLE decision_notification_deliveries")
             connection.execute("DROP TABLE telegram_decision_messages")
             connection.execute("DROP TABLE approval_run_trigger_requests")
             connection.execute("DROP TABLE decisions")
@@ -129,8 +134,14 @@ class BackupRestoreCliTests(unittest.TestCase):
             self.assertEqual(restored.returncode, 0, restored.stderr)
             restore_payload = json.loads(restored.stdout)
             self.assertEqual(restore_payload["status"], "restored")
-            self.assertEqual(restore_payload["restore"]["source_schema_version"], 6)
-            self.assertEqual(restore_payload["restore"]["schema_version"], 6)
+            self.assertEqual(
+                restore_payload["restore"]["source_schema_version"],
+                LATEST_SCHEMA_VERSION,
+            )
+            self.assertEqual(
+                restore_payload["restore"]["schema_version"],
+                LATEST_SCHEMA_VERSION,
+            )
             restored_status = run_cli(restored_home, "status", "--json")
             self.assertEqual(restored_status.returncode, 0, restored_status.stderr)
             self.assertEqual(
@@ -158,7 +169,10 @@ class BackupRestoreCliTests(unittest.TestCase):
                 "--replace-live",
             )
             self.assertEqual(human_restore.returncode, 0, human_restore.stderr)
-            self.assertIn("Restored schema 6 backup", human_restore.stdout)
+            self.assertIn(
+                f"Restored schema {LATEST_SCHEMA_VERSION} backup",
+                human_restore.stdout,
+            )
 
     def test_replacing_live_state_first_creates_a_verified_safety_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -472,10 +486,10 @@ class BackupRestoreCliTests(unittest.TestCase):
             self.assertEqual(backup_path.parent, home / "var" / "backups")
             self.assertEqual(backup_path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(metadata_path.stat().st_mode & 0o777, 0o600)
-            self.assertIn("-v6-", backup_path.name)
-            self.assertEqual(backup["schema_version"], 6)
+            self.assertIn(f"-v{LATEST_SCHEMA_VERSION}-", backup_path.name)
+            self.assertEqual(backup["schema_version"], LATEST_SCHEMA_VERSION)
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            self.assertEqual(metadata["schema_version"], 6)
+            self.assertEqual(metadata["schema_version"], LATEST_SCHEMA_VERSION)
             self.assertEqual(metadata["database_file"], backup_path.name)
             self.assertEqual(
                 metadata["checksum_sha256"],
@@ -488,12 +502,15 @@ class BackupRestoreCliTests(unittest.TestCase):
                     connection.execute(
                         "SELECT MAX(version) FROM schema_migrations"
                     ).fetchone()[0],
-                    6,
+                    LATEST_SCHEMA_VERSION,
                 )
             human_result = run_cli(home, "backup")
             self.assertEqual(human_result.returncode, 0, human_result.stderr)
             self.assertIn("Created backup", human_result.stdout)
-            self.assertIn("schema 6", human_result.stdout)
+            self.assertIn(
+                f"schema {LATEST_SCHEMA_VERSION}",
+                human_result.stdout,
+            )
 
     def test_mismatched_backup_name_and_metadata_is_rejected_and_not_pruned(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -547,7 +564,7 @@ class BackupRestoreCliTests(unittest.TestCase):
                     connection.execute(
                         "SELECT MAX(version) FROM schema_migrations"
                     ).fetchone()[0],
-                    6,
+                    LATEST_SCHEMA_VERSION,
                 )
 
     def test_init_creates_a_verified_backup_before_migrating_an_existing_database(self) -> None:
@@ -584,7 +601,7 @@ class BackupRestoreCliTests(unittest.TestCase):
                     connection.execute(
                         "SELECT MAX(version) FROM schema_migrations"
                     ).fetchone()[0],
-                    6,
+                    LATEST_SCHEMA_VERSION,
                 )
             restored_home = Path(directory) / "restored-home"
             restored = run_cli(
@@ -597,7 +614,10 @@ class BackupRestoreCliTests(unittest.TestCase):
             self.assertEqual(restored.returncode, 0, restored.stderr)
             restored_payload = json.loads(restored.stdout)["restore"]
             self.assertEqual(restored_payload["source_schema_version"], 2)
-            self.assertEqual(restored_payload["schema_version"], 6)
+            self.assertEqual(
+                restored_payload["schema_version"],
+                LATEST_SCHEMA_VERSION,
+            )
 
     def test_staging_migration_failure_cannot_replace_live_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
