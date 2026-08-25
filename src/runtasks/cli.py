@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import sys
 from typing import Any, Mapping, NoReturn, Sequence, cast
 
 from runtasks.adapters import ExternalAdapterError, build_external_adapter
-
+from runtasks.backups import (
+    BackupError,
+    create_backup,
+    create_backup_from_locked_database,
+    restore_backup,
+)
 from runtasks.cli_output import (
     configure_cli_redactor,
     print_json,
@@ -113,6 +119,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("init", help="initialize the runtime home")
+
+    backup_parser = subparsers.add_parser(
+        "backup", help="create a verified SQLite backup"
+    )
+    _add_output_json_flag(backup_parser)
+
+    restore_parser = subparsers.add_parser(
+        "restore", help="restore a verified SQLite backup"
+    )
+    restore_parser.add_argument("backup_path")
+    restore_parser.add_argument(
+        "--replace-live",
+        action="store_true",
+        help="explicitly replace the live registry after staged validation",
+    )
+    _add_output_json_flag(restore_parser)
 
     task_parser = subparsers.add_parser("task", help="manage scheduled tasks")
     task_actions = task_parser.add_subparsers(dest="task_command", required=True)
@@ -234,6 +256,15 @@ def main(arguments: Sequence[str] | None = None) -> int:
             if options.as_json:
                 raise ConfigurationError("--json is not supported by init")
             return _initialize(paths)
+        if options.command == "backup":
+            return _backup(paths, options.as_json)
+        if options.command == "restore":
+            return _restore(
+                paths,
+                Path(options.backup_path),
+                options.replace_live,
+                options.as_json,
+            )
         if options.command == "task":
             return _task_command(paths, options)
         if options.command == "run":
@@ -283,6 +314,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             getattr(options, "as_json", False),
         )
     except (
+        BackupError,
         ConfigurationError,
         DatabaseError,
         SecretConfigurationError,
@@ -315,10 +347,12 @@ def _json_output_requested(arguments: Sequence[str]) -> bool:
         return True
     command = arguments[0]
     if command in {
+        "backup",
         "decision",
         "decisions",
         "history",
         "run",
+        "restore",
         "run-due",
         "search",
         "status",
@@ -332,6 +366,28 @@ def _json_output_requested(arguments: Sequence[str]) -> bool:
 
 
 def _initialize(paths: RuntimePaths) -> int:
+    changed = _ensure_runtime_layout(paths)
+
+    def backup_existing_database() -> None:
+        create_backup_from_locked_database(
+            paths.database_file,
+            paths.backup_directory,
+        )
+
+    database_changed = initialize_database(
+        paths.database_file,
+        before_existing_change=backup_existing_database,
+    )
+    changed = changed or database_changed
+
+    if changed:
+        _safe_print(f"Initialized RunTasks at {paths.home}")
+    else:
+        _safe_print(f"RunTasks is already initialized at {paths.home}")
+    return 0
+
+
+def _ensure_runtime_layout(paths: RuntimePaths) -> bool:
     changed = False
     for directory in paths.required_directories:
         if not directory.exists():
@@ -339,18 +395,46 @@ def _initialize(paths: RuntimePaths) -> int:
             changed = True
         elif not directory.is_dir():
             raise OSError("runtime directory path is not a directory")
-
     if not paths.config_file.exists():
         paths.config_file.write_text(default_config_text(), encoding="utf-8")
         changed = True
+    return changed
 
-    database_changed = initialize_database(paths.database_file)
-    changed = changed or database_changed
 
-    if changed:
-        _safe_print(f"Initialized RunTasks at {paths.home}")
+def _backup(paths: RuntimePaths, as_json: bool) -> int:
+    artifact = create_backup(paths.database_file, paths.backup_directory)
+    if as_json:
+        _print_json({"backup": artifact.as_dict(), "status": "created"})
     else:
-        _safe_print(f"RunTasks is already initialized at {paths.home}")
+        _safe_print(
+            f"Created backup {artifact.path} "
+            f"(schema {artifact.schema_version}, {artifact.created_at})."
+        )
+    return 0
+
+
+def _restore(
+    paths: RuntimePaths,
+    backup_path: Path,
+    replace_live: bool,
+    as_json: bool,
+) -> int:
+    if not replace_live:
+        raise BackupError("restore requires explicit --replace-live confirmation")
+    _ensure_runtime_layout(paths)
+    outcome = restore_backup(
+        backup_path,
+        paths.database_file,
+        paths.backup_directory,
+        replace_live=True,
+    )
+    if as_json:
+        _print_json({"restore": outcome.as_dict(), "status": "restored"})
+    else:
+        _safe_print(
+            f"Restored schema {outcome.schema_version} backup to "
+            f"{outcome.destination}."
+        )
     return 0
 
 

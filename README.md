@@ -229,7 +229,53 @@ Initialization creates:
 ~/runtasks/var/backups/
 ```
 
-The command is idempotent. SQLite foreign keys and a five-second busy timeout are enabled on every application connection. WAL mode is requested where the SQLite build supports it, and initialization fails safely if FTS5 is unavailable.
+The command is idempotent. SQLite foreign keys and a five-second busy timeout are enabled on every application connection. WAL mode is requested where the SQLite build supports it, and initialization fails safely if FTS5 is unavailable. When an existing database needs migration or a journal-mode change, `init` first creates and verifies an online SQLite backup; a backup failure aborts initialization before the database is modified.
+
+## Backup and restore
+
+Create an online backup while RunTasks remains available for normal reads and writes:
+
+```bash
+bin/runtasks backup
+bin/runtasks backup --json
+```
+
+Backups use SQLite's online backup API and are written privately under
+`<RUNTASKS_HOME>/var/backups/`. Each artifact has a matching JSON metadata file;
+keep the `.sqlite3` and `.json` files together when moving a backup. Their names and
+metadata identify the UTC creation time, source schema version, and SHA-256 artifact
+checksum without copying Task policy text into metadata. Every backup is checked for SQLite integrity, foreign-key
+consistency, supported schema, and the FTS tables expected by that schema before it is
+published. Retention runs after every successful backup and keeps at most 14 verified
+daily artifacts, using the backup most recently created by the operation as that UTC
+day's snapshot. Unknown, malformed, orphaned, corrupt, or unverifiable files are left
+untouched rather than deleted speculatively; only verified backups safely outside the
+daily retention set are removed.
+
+Restore always stages a fresh SQLite database, validates the backed-up schema, applies
+supported migrations only to that staging database, enables WAL, and then revalidates
+integrity, foreign keys, the current schema, and FTS before changing live state. Merely
+naming a backup is not sufficient: replacing the live registry requires the explicit
+`--replace-live` operator action.
+
+```bash
+# Stop RunTasks listeners and schedulers first.
+RUNTASKS_HOME=~/runtasks-restored \
+  bin/runtasks restore /safe/path/runtasks-backup-v6-20260901T010000.000000Z.sqlite3 \
+  --replace-live
+
+RUNTASKS_HOME=~/runtasks-restored \
+  bin/runtasks restore /safe/path/runtasks-backup-v6-20260901T010000.000000Z.sqlite3 \
+  --replace-live --json
+```
+
+A fresh `RUNTASKS_HOME` receives the normal private runtime layout and default
+configuration. When replacing an existing live database, restore acquires exclusive
+RunTasks database access and refuses to proceed while another RunTasks connection is
+open. It then creates a verified safety backup of the locked live state. Any source
+validation, staging, lock, safety backup, checkpoint, or destination failure returns
+nonzero and leaves the live database in place. After success, use `status`, `task list`,
+`history`, `decisions`, and `search` to inspect the restored user-visible state.
 
 ## Configuration
 
