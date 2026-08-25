@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import telegram
 

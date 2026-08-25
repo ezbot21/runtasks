@@ -13,11 +13,20 @@ RunTasks is a portable Python application for durable, reviewed operational task
 ```bash
 uv sync --locked
 uv run runtasks status
-uv run python -m unittest discover -s tests -v
+uv run ruff check .
 uv run mypy
+uv run python -m runtasks.release_checks
+uv run python -m unittest discover -s tests -v
 ```
 
 All project, runtime, and development dependencies are exactly resolved in `uv.lock`. The pinned `tzdata` runtime dependency keeps IANA timezone validation portable on systems without an operating-system timezone database.
+
+## Documentation
+
+- [Operator guide](docs/operator-guide.md): install, uninstall, configuration, Agent Skill discovery, scheduler and Telegram operation, backup/restore, token rotation, and troubleshooting.
+- [Security model](docs/security.md): secret handling, redaction guarantees, approval boundaries, threat boundaries, and critical recovery.
+- [Pi MCP adapter handler](docs/pi-mcp-handler.md): 14-day policy, importance and uncertainty, exact approval, update validation, rollback, and quiet non-important behavior.
+- [Public-release verification](docs/release-verification.md): clean-checkout gates, FTS5 and systemd checks, fake Telegram authorization, and complete fake update/rollback proof.
 
 ## Agent Skill
 
@@ -400,15 +409,18 @@ Setup and listening refuse to poll while a webhook is configured. A token-keyed 
 
 Telegram bot chats are **not end-to-end encrypted**. Never send tokens, credentials, environment files, private keys, or unredacted logs through the bot. RunTasks redacts configured private values and sensitive URL components from outbound notifications and reports integration failures without echoing Telegram responses.
 
-Use only numeric user and chat IDs for authorization, keep the bot in a private DM for the initial deployment, and enable two-factor authentication on the operator's Telegram account. If the BotFather token appears in a terminal capture, log, chat, issue, or commit, rotate it immediately through `@BotFather`, update `~/runtasks/.env`, and restart the listener. Telegram credentials and IDs are loaded from private configuration and are never stored in SQLite.
+Use only numeric user and chat IDs for authorization, keep the bot in a private DM for the initial deployment, and enable two-factor authentication on the operator's Telegram account. If the BotFather token appears in a terminal capture, log, chat, issue, or commit, rotate it immediately through `@BotFather`, update `~/runtasks/.env`, and restart the listener. The bot token and configured authorization allowlists are not copied into SQLite. Decision audit records necessarily retain the numeric responding user identity plus the mapped chat and message IDs.
 
 ## Testing safely
 
 Behavior tests execute `bin/runtasks` in subprocesses with a temporary `RUNTASKS_HOME`. Telegram tests use recorded Bot API update fixtures and fake notification clients; they never contact Telegram or inspect the operator's real home:
 
 ```bash
-python -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests -v
+uv run python -m unittest tests.test_end_to_end_release -v
 ```
+
+The end-to-end release suite advances an explicit fake clock and exercises fake release discovery, Telegram approval, exact update, success validation, exact rollback, critical failed rollback, and FTS history search. It never calls real Pi, systemd, npm, GitHub, package installation, networks, or Telegram.
 
 ## License
 

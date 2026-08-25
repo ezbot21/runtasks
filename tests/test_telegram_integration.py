@@ -36,7 +36,7 @@ from tests.recorded_telegram import load_recorded_updates
 from tests.telegram_fakes import FakeNotificationClient, FakeTelegramClient
 
 
-TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"  # release-check: allow-fake-secret
 
 
 class RecordingBotTransport:

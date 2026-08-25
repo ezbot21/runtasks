@@ -592,7 +592,7 @@ class PiMcpUpdateExecutionCliTests(unittest.TestCase):
             self.initialize(home)
             task = self.add_task(home)
             approved = self.create_approved_decision(home, str(task["id"]))
-            fake_credential = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+            fake_credential = "ghp_abcdefghijklmnopqrstuvwxyz123456"  # release-check: allow-fake-secret
 
             executed = run_cli(
                 home,
@@ -1628,7 +1628,7 @@ class PiMcpUpdateExecutionCliTests(unittest.TestCase):
             self.initialize(home)
             task = self.add_task(home)
             approved = self.create_approved_decision(home, str(task["id"]))
-            fake_credential = "ghp_notificationboundary1234567890"
+            fake_credential = "ghp_notificationboundary1234567890"  # release-check: allow-fake-secret
             database_path = home / "var" / "data" / "runtasks.sqlite3"
             with sqlite3.connect(database_path) as connection:
                 connection.execute(

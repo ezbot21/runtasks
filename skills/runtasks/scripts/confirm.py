@@ -16,7 +16,7 @@ from typing import Any, Literal, Mapping, NoReturn, Sequence, TypedDict, cast
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPOSITORY_ROOT / "src"))
 
-from runtasks.tasks import (  # type: ignore[import-untyped]
+from runtasks.tasks import (  # type: ignore[import-untyped]  # noqa: E402
     REQUIRED_TASK_FIELDS as APPLICATION_REQUIRED_TASK_FIELDS,
     SOURCE_TYPES,
     TASK_FIELDS,

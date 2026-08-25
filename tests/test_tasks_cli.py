@@ -474,13 +474,13 @@ class TaskCliTests(unittest.TestCase):
                 (
                     {
                         "policy": {
-                            "note": "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+                            "note": "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"  # release-check: allow-fake-secret
                         }
                     },
                     "policy contains secret-like values",
                 ),
                 (
-                    {"policy": {"note": "AKIAABCDEFGHIJKLMNOP"}},
+                    {"policy": {"note": "AKIAABCDEFGHIJKLMNOP"}},  # release-check: allow-fake-secret
                     "policy contains secret-like values",
                 ),
             )

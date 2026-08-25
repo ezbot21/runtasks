@@ -14,7 +14,7 @@ from tests.recorded_telegram import load_recorded_updates
 
 
 SUBPROCESS_FAKES = Path(__file__).parent / "subprocess_fakes"
-TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"  # release-check: allow-fake-secret
 
 
 @contextmanager

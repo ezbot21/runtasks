@@ -11,7 +11,7 @@ from runtasks.paths import RuntimePaths
 from runtasks.telegram import PollerAlreadyRunningError, PollerGuard
 
 
-TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"  # release-check: allow-fake-secret
 
 
 class PollerGuardTests(unittest.TestCase):

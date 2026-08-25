@@ -9,7 +9,7 @@ from runtasks.telegram import (
 )
 
 
-TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"  # release-check: allow-fake-secret
 
 
 class TelegramConfigurationTests(unittest.TestCase):

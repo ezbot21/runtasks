@@ -85,7 +85,7 @@ class RedactionContractTests(unittest.TestCase):
 
         redacted = redactor.value(
             {
-                "message": "configured-private-value ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+                "message": "configured-private-value ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",  # release-check: allow-fake-secret
                 "configured-private-value": "evidence-key-secret",
                 "nested": [
                     {"access_token": "anything", "api_key": "short-value"},

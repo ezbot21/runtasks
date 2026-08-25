@@ -23,7 +23,7 @@ from runtasks.secrets import (
 )
 
 
-TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"  # release-check: allow-fake-secret
 
 
 class RedactionTests(unittest.TestCase):
@@ -122,7 +122,7 @@ class RedactionTests(unittest.TestCase):
             "password = spaced-secret {\"password\":\"json-secret\"} "
             "Authorization: Bearer bearer-secret "
             "Authorization = Bearer equals-bearer "
-            "-----BEGIN PRIVATE KEY-----\nprivate-key-body\n"
+            "-----BEGIN PRIVATE KEY-----\nprivate-key-body\n"  # release-check: allow-fake-secret
             "-----END PRIVATE KEY----- "
             f"https://user:password@example.test/path?q={TOKEN} "
             f"ssh://user:credential@example.test/private/key "

@@ -26,7 +26,7 @@ from tests.cli_test_support import run_cli
 from tests.telegram_fakes import FakeTelegramClient
 
 
-TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"  # release-check: allow-fake-secret
 USER_ID = 998877665
 
 
