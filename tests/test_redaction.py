@@ -43,6 +43,7 @@ class RedactionTests(unittest.TestCase):
                 "API_KEY": "xy",
                 "ORDINARY_SETTING": "ordinary-environment-value",
                 "PRIVATE_PIN": "123456",
+                "RUNTASKS_APPLICATION_ROOT": "/displayed/user/home/runtasks",
                 "RUNTASKS_TELEGRAM_BOT_TOKEN": TOKEN,
                 "SHORT_VALUE": "1",
                 "TRUE_SETTING": "true",
@@ -53,11 +54,13 @@ class RedactionTests(unittest.TestCase):
         self.assertEqual(values["RUNTASKS_TELEGRAM_BOT_TOKEN"], TOKEN)
         self.assertNotIn("AWS_SECRET_ACCESS_KEY", values)
         self.assertNotIn("ORDINARY_SETTING", values)
+        self.assertNotIn("RUNTASKS_APPLICATION_ROOT", values)
         self.assertIn("aws-private-value", redaction_values)
         self.assertIn("xy", redaction_values)
         self.assertIn("ordinary-environment-value", redaction_values)
         self.assertIn("123456", redaction_values)
         self.assertNotIn("/displayed/user/home", redaction_values)
+        self.assertNotIn("/displayed/user/home/runtasks", redaction_values)
         self.assertIn("1", redaction_values)
         self.assertNotIn("true", redaction_values)
         self.assertNotIn(

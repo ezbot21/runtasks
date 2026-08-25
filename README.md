@@ -23,7 +23,42 @@ All project, runtime, and development dependencies are exactly resolved in `uv.l
 
 The canonical standards-compatible Agent Skill is available directly from the repository at [`skills/runtasks/SKILL.md`](skills/runtasks/SKILL.md). It extracts one or more Task proposals from conversation context, documents, pasted text, direct instructions, or existing Tasks. Each proposal is staged as a hash-checked review and shows its full policy and assumptions before asking for `YES`, `NO`, or `EDIT`; only an explicit `YES` can invoke `task add` or `task update` with the exact reviewed payload.
 
-Global cross-agent discovery installation is intentionally handled by a later feature. Until then, load or invoke the canonical skill from this repository in any Agent Skills-compatible harness.
+`runtasks install` exposes this one canonical source through both `~/.agents/skills/runtasks` (Pi, Codex, and OpenCode) and `~/.claude/skills/runtasks` (Claude Code). The installer launches every supported agent executable found on the local `PATH` in an isolated temporary home and verifies that the agent actually discovers the skill. It uses symlinks when supported and replaces a managed discovery link with a documented managed-copy fallback when an installed harness does not follow symlinks.
+
+## User installation
+
+On Linux systems with a systemd user manager, install the runtime, persistent scheduler, Telegram listener, and cross-agent skill discovery with:
+
+```bash
+bin/runtasks install
+bin/runtasks install --json
+```
+
+Installation is idempotent. Before enabling anything it asks the installed `systemd-analyze` to validate the exact calendar expression `*-*-* 09:00:00 Asia/Singapore`. It then manages only these clearly named user units under `~/.config/systemd/user/`:
+
+```text
+runtasks-scheduler.service  one-shot `runtasks run-due` runner
+runtasks-scheduler.timer    persistent daily 09:00 Asia/Singapore wake
+runtasks-telegram.service   long-poll listener with Restart=on-failure
+```
+
+Generated units use systemd `%h` expansion for the application executable, runtime working directory, and user-owned executable directories captured from the validated installer `PATH`; no username or literal home path is embedded. The Telegram listener records approvals and requests the separate `runtasks-scheduler.service`; it never executes approved mutations directly.
+
+The application and `RUNTASKS_HOME` must both be under the current user's home so the generated units can remain portable. Missing systemd tooling, an unavailable systemd user manager, an invalid calendar expression, an unavailable canonical skill, an unmanaged conflicting unit/link, or failed installed-agent discovery is reported as a validation error before the timer or listener is enabled.
+
+Remove only managed units and discovery entries with:
+
+```bash
+bin/runtasks uninstall
+```
+
+By default uninstallation preserves `config/`, `.env`, the SQLite database, logs, and backups. Remove those runtime data paths only with the explicit destructive option:
+
+```bash
+bin/runtasks uninstall --remove-data
+```
+
+Source code, the canonical skill, unrelated user units or skill directories, and account-global Telegram poller lock files are never removed by `--remove-data`.
 
 ## Runtime home
 

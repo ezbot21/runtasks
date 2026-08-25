@@ -40,6 +40,11 @@ from runtasks.decisions import (
     search_decisions,
 )
 from runtasks.handlers import build_handler_registry
+from runtasks.installation import (
+    InstallationError,
+    install_user_environment,
+    uninstall_user_environment,
+)
 from runtasks.notifications import (
     NotificationDeliveryError,
     NotificationDestinationError,
@@ -119,6 +124,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("init", help="initialize the runtime home")
+
+    install_parser = subparsers.add_parser(
+        "install", help="install RunTasks user services and skill discovery"
+    )
+    _add_output_json_flag(install_parser)
+
+    uninstall_parser = subparsers.add_parser(
+        "uninstall", help="remove managed RunTasks user installation files"
+    )
+    uninstall_parser.add_argument(
+        "--remove-data",
+        action="store_true",
+        help="also remove RunTasks configuration, secrets, database, logs, and backups",
+    )
+    _add_output_json_flag(uninstall_parser)
 
     backup_parser = subparsers.add_parser(
         "backup", help="create a verified SQLite backup"
@@ -244,6 +264,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
     try:
         paths = RuntimePaths.from_environment()
+        if options.command == "install":
+            return _install(paths, options.as_json)
+        if options.command == "uninstall":
+            return _uninstall(paths, options.remove_data, options.as_json)
+
         settings = load_app_settings(paths)
         secret_settings = load_secret_settings(paths)
         process_redaction_values = environment_redaction_values()
@@ -316,6 +341,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     except (
         BackupError,
         ConfigurationError,
+        InstallationError,
         DatabaseError,
         SecretConfigurationError,
         ExternalAdapterError,
@@ -351,12 +377,14 @@ def _json_output_requested(arguments: Sequence[str]) -> bool:
         "decision",
         "decisions",
         "history",
+        "install",
         "run",
         "restore",
         "run-due",
         "search",
         "status",
         "telegram",
+        "uninstall",
     }:
         return "--json" in arguments[1:]
     if command != "task" or len(arguments) < 2:
@@ -366,6 +394,15 @@ def _json_output_requested(arguments: Sequence[str]) -> bool:
 
 
 def _initialize(paths: RuntimePaths) -> int:
+    changed = _initialize_runtime(paths)
+    if changed:
+        _safe_print(f"Initialized RunTasks at {paths.home}")
+    else:
+        _safe_print(f"RunTasks is already initialized at {paths.home}")
+    return 0
+
+
+def _initialize_runtime(paths: RuntimePaths) -> bool:
     changed = _ensure_runtime_layout(paths)
 
     def backup_existing_database() -> None:
@@ -378,12 +415,42 @@ def _initialize(paths: RuntimePaths) -> int:
         paths.database_file,
         before_existing_change=backup_existing_database,
     )
-    changed = changed or database_changed
+    return changed or database_changed
 
-    if changed:
-        _safe_print(f"Initialized RunTasks at {paths.home}")
+
+def _install(paths: RuntimePaths, as_json: bool) -> int:
+    outcome = install_user_environment(
+        paths,
+        initialize_runtime=lambda: _initialize_runtime(paths),
+    )
+    if as_json:
+        _print_json(outcome.as_dict())
     else:
-        _safe_print(f"RunTasks is already initialized at {paths.home}")
+        _safe_print("Installed RunTasks user services and skill discovery.")
+        for service in outcome.services:
+            _safe_print(f"Service: {service}")
+        for agent in outcome.agents:
+            fallback = (
+                f" ({agent.fallback} fallback)" if agent.fallback is not None else ""
+            )
+            _safe_print(f"Skill discovery: {agent.name} verified{fallback}")
+    return 0
+
+
+def _uninstall(paths: RuntimePaths, remove_data: bool, as_json: bool) -> int:
+    outcome = uninstall_user_environment(paths, remove_data=remove_data)
+    if as_json:
+        _print_json(outcome.as_dict())
+    else:
+        _safe_print("Removed managed RunTasks user services and skill discovery.")
+        if remove_data:
+            _safe_print(
+                "Removed RunTasks configuration, secrets, database, logs, and backups."
+            )
+        else:
+            _safe_print(
+                "Preserved RunTasks configuration, secrets, database, logs, and backups."
+            )
     return 0
 
 

@@ -18,6 +18,7 @@ _PUBLIC_PROCESS_ENVIRONMENT_NAMES = {
     "PATH",
     "PWD",
     "PYTHONPATH",
+    "RUNTASKS_APPLICATION_ROOT",
     "RUNTASKS_HOME",
     "SHELL",
     "SHLVL",
@@ -47,7 +48,8 @@ def load_secret_settings(
         {
             name: value
             for name, value in process_environment.items()
-            if name.startswith("RUNTASKS_") and name != "RUNTASKS_HOME"
+            if name.startswith("RUNTASKS_")
+            and name not in {"RUNTASKS_APPLICATION_ROOT", "RUNTASKS_HOME"}
         }
     )
     return MappingProxyType(values)
